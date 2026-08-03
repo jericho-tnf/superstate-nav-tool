@@ -19,20 +19,19 @@ with col2:
 
 if st.button("Query NAV"):
     dt = datetime.combine(date, time).replace(tzinfo=timezone.utc)
-    fund_id = FUND_IDS[fund]
 
     st.write(f"Querying NAV/share as of **{dt.isoformat()}**")
 
     try:
-        api_result = get_nav_per_share_at(fund_id, dt)
-        st.metric("Off-chain API (real-time-price)", f"{api_result:.6f}")
+        api_result = get_nav_per_share_at(dt, fund)
+        st.write("Raw off-chain API result:", api_result)
     except Exception as e:
         st.error(f"Off-chain API error: {e}")
 
     if fund == "USTB":
         try:
             onchain_result = get_onchain_nav_per_share_at(dt)
-            st.metric("On-chain oracle (Continuous Oracle)", f"{onchain_result:.6f}")
+            st.write("Raw on-chain oracle result:", onchain_result)
         except Exception as e:
             st.error(f"On-chain oracle error: {e}")
     else:
@@ -40,6 +39,6 @@ if st.button("Query NAV"):
 
     try:
         daily = get_daily_close_nav(date, fund)
-        st.metric("Officially reported Daily NAV/S", f"{daily:.8f}")
+        st.write("Raw daily NAV result:", daily)
     except Exception as e:
         st.error(f"Daily NAV error: {e}")
