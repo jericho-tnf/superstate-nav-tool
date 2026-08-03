@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from superstate_nav import get_nav_per_share_at, get_daily_close_nav
 from superstate_onchain_nav import get_onchain_nav_per_share_at
 
-FUND_IDS = {"USTB": 1, "USCC": 2}
+FUND_IDS = {"USTB": 1}
 
 st.set_page_config(page_title="Superstate NAV Lookup", page_icon="📈")
 
