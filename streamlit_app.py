@@ -49,6 +49,7 @@ st.markdown("""
     .result-caption-slot { min-height: 18px; }
     .result-caption-warn { color: #f59e0b; font-size: 13px; }
 
+    div[data-testid="stButton"] { margin-top: 0 !important; }
     .stButton > button {
         background: linear-gradient(135deg, #0891b2, #22d3ee);
         color: white; border: none; border-radius: 10px;
@@ -79,7 +80,7 @@ with st.container(border=True):
     with c3:
         time = st.time_input("Time (UTC)", value=datetime.strptime("23:59:00", "%H:%M:%S").time())
     with c4:
-        st.write("")
+        st.markdown('<div style="height:29px;"></div>', unsafe_allow_html=True)
         query_clicked = st.button("Query NAV →", use_container_width=True)
 
 if query_clicked:
