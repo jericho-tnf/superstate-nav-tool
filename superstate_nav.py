@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, timezone, date, time
 
 BASE_URL = "https://api.superstate.com"
-FUND_IDS = {"USTB": 1, "USCC": 2}
+FUND_IDS = {"USTB": 1}
 
 
 def _fund_id(fund):
