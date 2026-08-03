@@ -7,6 +7,16 @@ from superstate_onchain_nav import get_onchain_nav_per_share_at
 FUND_IDS = {"USTB": 1, "USCC": 2}
 
 st.set_page_config(page_title="Superstate NAV Lookup", page_icon="📈")
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="stToolbar"] {visibility: hidden;}
+    [data-testid="stDecoration"] {visibility: hidden;}
+    [data-testid="stStatusWidget"] {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
 st.title("Superstate NAV/Share Lookup")
 st.caption("Query NAV per share at a specific UTC timestamp — off-chain (API) vs on-chain (oracle).")
 
