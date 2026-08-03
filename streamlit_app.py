@@ -52,7 +52,8 @@ st.markdown("""
     .stButton > button {
         background: linear-gradient(135deg, #0891b2, #22d3ee);
         color: white; border: none; border-radius: 10px;
-        padding: 10px 24px; font-weight: 600; font-size: 16px; width: 100%;
+        padding: 10px 18px; font-weight: 600; font-size: 15px; width: 100%;
+        white-space: nowrap;
     }
     .stButton > button:hover { opacity: 0.9; color: white; }
     </style>
@@ -78,7 +79,6 @@ with st.container(border=True):
     with c3:
         time = st.time_input("Time (UTC)", value=datetime.strptime("23:59:00", "%H:%M:%S").time())
     with c4:
-        st.write("")
         st.write("")
         query_clicked = st.button("Query NAV →", use_container_width=True)
 
