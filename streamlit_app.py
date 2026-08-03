@@ -91,4 +91,33 @@ if query_clicked:
                 st.markdown('<div class="result-label">Off-chain API</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="result-price">${api_result["price"]:.6f}</div>', unsafe_allow_html=True)
                 if api_result.get("snapped_to_nearest_available"):
-                    st.markdown('<div class="result-ca
+                    st.markdown('<div class="result-caption-warn">⚠️ Snapped to nearest available data</div>', unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    with col2:
+        with st.container(border=True):
+            if fund == "USTB":
+                try:
+                    onchain_result = get_onchain_nav_per_share_at(dt)
+                    st.markdown('<div class="result-icon">🔗</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="result-label">On-chain Oracle</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="result-price">${onchain_result["price"]:.6f}</div>', unsafe_allow_html=True)
+                    if onchain_result.get("stale"):
+                        st.markdown('<div class="result-caption-warn">⚠️ Checkpoint data may be stale</div>', unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            else:
+                st.markdown('<div class="result-label">On-chain Oracle</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-caption-info">USTB only</div>', unsafe_allow_html=True)
+
+    with col3:
+        with st.container(border=True):
+            try:
+                daily = get_daily_close_nav(date, fund)
+                st.markdown('<div class="result-icon">🛡️</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-label">Official Daily NAV</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="result-price">${float(daily["net_asset_value"]):.8f}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="result-caption-info">📅 As of {daily["net_asset_value_date"]}</div>', unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Error: {e}")
