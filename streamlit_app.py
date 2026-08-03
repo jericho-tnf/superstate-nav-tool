@@ -6,7 +6,7 @@ from superstate_onchain_nav import get_onchain_nav_per_share_at
 
 FUND_IDS = {"USTB": 1, "USCC": 2}
 
-st.set_page_config(page_title="Superstate NAV Lookup", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Superstate NAV Lookup", page_icon="📈")
 
 st.markdown("""
     <style>
@@ -25,8 +25,8 @@ st.markdown("""
         background: linear-gradient(135deg, #0891b2, #22d3ee);
         display: flex; align-items: center; justify-content: center; font-size: 28px; flex-shrink: 0;
     }
-    .header-title { font-size: 34px; font-weight: 800; color: white; margin: 0; }
-    .header-subtitle { color: #94a3b8; margin: 0; font-size: 15px; }
+    .header-title { font-size: 30px; font-weight: 800; color: white; margin: 0; }
+    .header-subtitle { color: #94a3b8; margin: 0; font-size: 14px; }
 
     div[data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #101827;
@@ -39,10 +39,15 @@ st.markdown("""
         width: 34px; height: 34px; border-radius: 8px; background: #0e2230;
         display: flex; align-items: center; justify-content: center; font-size: 16px; margin-bottom: 8px;
     }
-    .result-label { color: #cbd5e1; font-size: 15px; font-weight: 500; margin-bottom: 4px; }
-    .result-price { color: white; font-size: 34px; font-weight: 800; margin: 4px 0; }
+    .result-label-row {
+        display: flex; justify-content: space-between; align-items: baseline;
+        min-height: 18px; margin-bottom: 4px;
+    }
+    .result-label { color: #cbd5e1; font-size: 15px; font-weight: 500; }
+    .result-date { color: #94a3b8; font-size: 12px; white-space: nowrap; }
+    .result-price { color: white; font-size: 30px; font-weight: 800; margin: 4px 0; }
+    .result-caption-slot { min-height: 18px; }
     .result-caption-warn { color: #f59e0b; font-size: 13px; }
-    .result-caption-info { color: #94a3b8; font-size: 13px; }
 
     .stButton > button {
         background: linear-gradient(135deg, #0891b2, #22d3ee);
@@ -88,10 +93,10 @@ if query_clicked:
             try:
                 api_result = get_nav_per_share_at(dt, fund)
                 st.markdown('<div class="result-icon">☁️</div>', unsafe_allow_html=True)
-                st.markdown('<div class="result-label">Off-chain API</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-label-row"><span class="result-label">Off-chain API</span><span class="result-date"></span></div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="result-price">${api_result["price"]:.6f}</div>', unsafe_allow_html=True)
-                if api_result.get("snapped_to_nearest_available"):
-                    st.markdown('<div class="result-caption-warn">⚠️ Snapped to nearest available data</div>', unsafe_allow_html=True)
+                warn = '⚠️ Snapped to nearest available data' if api_result.get("snapped_to_nearest_available") else ''
+                st.markdown(f'<div class="result-caption-slot result-caption-warn">{warn}</div>', unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -101,23 +106,23 @@ if query_clicked:
                 try:
                     onchain_result = get_onchain_nav_per_share_at(dt)
                     st.markdown('<div class="result-icon">🔗</div>', unsafe_allow_html=True)
-                    st.markdown('<div class="result-label">On-chain Oracle</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="result-label-row"><span class="result-label">On-chain Oracle</span><span class="result-date"></span></div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="result-price">${onchain_result["price"]:.6f}</div>', unsafe_allow_html=True)
-                    if onchain_result.get("stale"):
-                        st.markdown('<div class="result-caption-warn">⚠️ Checkpoint data may be stale</div>', unsafe_allow_html=True)
+                    warn = '⚠️ Checkpoint data may be stale' if onchain_result.get("stale") else ''
+                    st.markdown(f'<div class="result-caption-slot result-caption-warn">{warn}</div>', unsafe_allow_html=True)
                 except Exception as e:
                     st.error(f"Error: {e}")
             else:
-                st.markdown('<div class="result-label">On-chain Oracle</div>', unsafe_allow_html=True)
-                st.markdown('<div class="result-caption-info">USTB only</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-label-row"><span class="result-label">On-chain Oracle</span></div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-caption-slot">USTB only</div>', unsafe_allow_html=True)
 
     with col3:
         with st.container(border=True):
             try:
                 daily = get_daily_close_nav(date, fund)
                 st.markdown('<div class="result-icon">🛡️</div>', unsafe_allow_html=True)
-                st.markdown('<div class="result-label">Official Daily NAV</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="result-label-row"><span class="result-label">Official Daily NAV</span><span class="result-date">📅 {daily["net_asset_value_date"]}</span></div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="result-price">${float(daily["net_asset_value"]):.8f}</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="result-caption-info">📅 As of {daily["net_asset_value_date"]}</div>', unsafe_allow_html=True)
+                st.markdown('<div class="result-caption-slot"></div>', unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"Error: {e}")
