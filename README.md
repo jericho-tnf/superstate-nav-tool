@@ -1,19 +1,36 @@
 # Superstate NAV Query
 
-Look up Superstate USTB NAV per share at a specific UTC instant, from three independent
-sources, and reconcile them:
+Look up Superstate USTB NAV per share at a specific UTC instant, from three sources, and
+reconcile them:
 
-| Source | What it is |
-|---|---|
-| **Off-chain API** | `api.superstate.com` continuous price — defined at every second |
-| **On-chain oracle** | Computed on Ethereum by `calculateRealtimeNavs` from daily checkpoints |
-| **Official daily NAV/S** | `nav-daily` — one calculated value per business day, as of 17:00 ET |
+| Source | What it is | Evidential weight |
+|---|---|---|
+| **Off-chain API** | `api.superstate.com` continuous price — defined at every second | Issuer-reported, documented |
+| **On-chain oracle** | Computed on Ethereum by `calculateRealtimeNavs` from daily checkpoints | Reproducible, but **derived** |
+| **Official daily NAV/S** | `nav-daily` — one calculated value per business day, 17:00 ET | **Attestable** — a stored on-chain fact |
+
+Only the third is a value anyone actually calculated. The first two are the same
+straight-line accrual model, computed in two places; they agree bit-for-bit, which is an
+integrity check on the on-chain publication, not independent corroboration of the NAV.
 
 ```bash
 pip install -r requirements.txt
-streamlit run streamlit_app.py          # UI
-python compare_nav.py 2026-07-27        # CLI reconciliation
+streamlit run streamlit_app.py                       # UI
+python compare_nav.py 2026-07-27                     # CLI reconciliation
+python compare_nav.py 2026-07-27 --worksheet         # + Etherscan re-performance steps
 ```
+
+## Sources of record
+
+| What | Where |
+|---|---|
+| API spec (OpenAPI) | `https://api.superstate.com/api-docs/openapi.json`, rendered at [`/swagger-ui/`](https://api.superstate.com/swagger-ui/) |
+| `real-time-price` | spec tag `Prices`, operationId `real_time_price_handler`, `POST /v1/funds/{id}/real-time-price`, unauthenticated |
+| `nav-daily` | spec tag `funds_runtime_data_handler`, plus [docs.superstate.com/investors/api](https://docs.superstate.com/investors/api) |
+| Contract addresses | [docs.superstate.com/investors/smart-contracts](https://docs.superstate.com/investors/smart-contracts) |
+| Oracle contract | `0xe4fa682f94610ccd170680cc3b045d77d9e528a8` — "Superstate USTB Continuous Price Oracle" |
+| Chainlink USTB feed | `0x289B5036cd942e619E1Ee48670F98d214E745AAC` — independent daily NAV/S, **not yet used by this tool** |
+| Oracle source | [`superstateinc/onchain-redemptions`](https://github.com/superstateinc/onchain-redemptions) → `src/oracle/SuperstateOracle.sol` |
 
 ## Three things that make this non-obvious
 
@@ -70,13 +87,40 @@ instant where all three figures are comparable. End-of-day `23:59:59` sits 2–3
 A checkpoint is invisible to the oracle until published (lag 0.67–3.68 days), so what the
 oracle *said* at a past instant differs from the best estimate *now*:
 
-- `ORACLE_VIEW` — brackets by `effective_at`. Reproduces exactly what a smart contract
-  would have read at that instant. The off-chain API replicates this bit-for-bit.
-- `HINDSIGHT_VIEW` — brackets by `timestamp`, using every checkpoint now known. At a
-  checkpoint instant this returns that checkpoint's stored value exactly, so it reconciles
-  to the official daily NAV/S to the integer.
+- `ORACLE_VIEW` — brackets by `effective_at`. **This is the canonical one.** It reproduces
+  exactly what a smart contract would have read at that instant, and the off-chain API
+  replicates it bit-for-bit. `effective_at` exists in the struct for precisely this
+  purpose: gating when a checkpoint becomes usable.
+- `HINDSIGHT_VIEW` — brackets by `timestamp`, using every checkpoint now known. **The
+  oracle never does this**, so it is an analytical view, not an on-chain figure. Do not
+  record its output as an oracle value; the UI tags it amber and states what the oracle
+  actually reported.
 
 They agree except inside publication gaps, where they diverge by up to **0.04 bps**.
+
+If what you want is the official NAV/S, don't use either — read the checkpoint directly.
+At a checkpoint instant the hindsight figure is arithmetically identical to
+`checkpoints(N).navs` (the interpolation term is multiplied by zero), so it is a
+roundabout path to a number the third card already reads straight from storage.
+
+## Re-performing a figure by hand
+
+Every on-chain number is reproducible on a block explorer, which is the point of tagging
+it `derived` rather than trusting it. The provenance panel emits the exact
+`calculateRealtimeNavs` inputs with each one traced to `checkpoints(N).navs` or
+`.timestamp`, plus the bracket rationale; `--worksheet` prints the same thing for both
+views. Worked example for 2026-07-31 23:59:00 UTC:
+
+```
+checkpoints(409) -> navs=11161771  timestamp=1785358800
+checkpoints(410) -> navs=11162843  timestamp=1785445200
+
+calculateRealtimeNavs(1785542340, 11161771, 1785358800, 11162843, 1785445200)
+  -> 11164048  ->  $11.164048
+```
+
+What this tests is exactly what the code decides — the target timestamp and the choice of
+two checkpoints. The interpolation belongs to the contract and is not under test.
 
 ## Verified against mainnet
 
@@ -95,9 +139,11 @@ Oracle `0xe4fa682f94610ccd170680cc3b045d77d9e528a8`:
 ## Caveats
 
 - **Pre-inception timestamps** return `0.000000` from the API with your timestamp echoed
-  back. Raised as `NavUnavailable` rather than displayed as a NAV of zero.
+  back, as HTTP `200` rather than the `400` the spec lists. Raised as `NavUnavailable`
+  rather than displayed as a NAV of zero.
 - **Future timestamps** are silently clamped to "now" by the API; flagged as
-  `clamped_from_future`.
+  `clamped_from_future`. Neither this nor the `0.000000` behaviour appears in the OpenAPI
+  spec, which is why both guards are hand-rolled rather than driven off documented errors.
 - **Staleness** is measured from the checkpoint's `timestamp`, not `effective_at` —
   measuring from publication time would be lenient by up to 3.68 days.
 - Weekend and Friday end-of-day readings are the least reliable points in the series:
@@ -106,6 +152,47 @@ Oracle `0xe4fa682f94610ccd170680cc3b045d77d9e528a8`:
   (`code 3, "execution reverted"`) from transport failures and retries the latter —
   without that, a throttled response would truncate the checkpoint search and return a
   stale price with no error.
+- The public RPC also **refuses archive requests** (`"Archive requests require a personal
+  token"`), so historical state and log queries are unavailable. Anything needing them
+  requires an archive-capable endpoint.
+
+## Known unresolved
+
+**Share count does not reconcile to on-chain supply.** `outstanding_shares` from
+`nav-daily` materially exceeds the summed token supply across every chain Superstate
+documents:
+
+```
+Ethereum totalSupply()          67,695,561.610335
++ Plume                            226,637.757499
++ Solana                           210,704.984207
+                                ─────────────────
+  total on-chain                 68,132,904.352041
+  outstanding_shares (08/03)      83,348,590.578575
+  gap                            −15,215,686  (−18.3%)
+```
+
+The gap **grew** as shares were issued (79.65M on 07/31 → 83.35M on 08/03), so it is
+structural rather than a timing artefact — roughly 15M shares appear not to be tokenised
+on any chain. Whether that is book-entry holdings, another share class, or something else
+is unverified.
+
+**Consequence:** on-chain token supply cannot currently be used as an independent check on
+the NAV denominator, and `AUM ÷ outstanding_shares` reconciles only within the API's own
+figures (exactly, to 6e-14). Confirming this needs an archive RPC to read historical
+supply, or an answer from Superstate.
+
+## Not yet done
+
+- **Chainlink USTB feed** (`0x289B5036…`) is documented and live but unused. It is the one
+  genuinely *independent* source available — a separate contract, separate operator —
+  and its answer matched `checkpoints(411).navs` exactly (`11163903`), published ~90
+  seconds after Superstate's own checkpoint became effective. Adding it would give real
+  corroboration rather than two views of the same data.
+- **Holdings** (`GET /v2/funds/1/holdings`) returns the actual T-bill portfolio with
+  maturities and costs. Pricing those independently is the only route to verifying the NAV
+  rather than confirming it was published consistently.
+- **`GET /v1/funds/{id}/share-distribution`** may explain the share-count gap above.
 
 ## Layout
 

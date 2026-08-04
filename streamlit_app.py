@@ -68,6 +68,12 @@ st.markdown("""
         text-transform: uppercase; color: #7dd3fc; background: #0c2b3a;
         border: 1px solid #164e63; border-radius: 5px; padding: 1px 6px; margin-left: 6px;
     }
+    /* Amber, to signal this figure is NOT what the oracle reported. */
+    .hindsight-tag {
+        display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+        text-transform: uppercase; color: #fbbf24; background: #3a2a0c;
+        border: 1px solid #78350f; border-radius: 5px; padding: 1px 6px; margin-left: 6px;
+    }
 
     .stButton > button {
         background: linear-gradient(135deg, #0891b2, #22d3ee);
@@ -156,13 +162,15 @@ with st.container(border=True):
         horizontal=True,
         key="bracket_view",
         format_func=lambda v: {
-            onchain.ORACLE_VIEW: "As the oracle saw it (by effective_at)",
-            onchain.HINDSIGHT_VIEW: "Best estimate, all checkpoints known (by timestamp)",
+            onchain.ORACLE_VIEW: "As the oracle saw it (by effective_at) — canonical",
+            onchain.HINDSIGHT_VIEW: "Hindsight, all checkpoints known (by timestamp) — analytical",
         }[v],
         help="A checkpoint is invisible to the oracle until published (0.67–3.68 days later). "
-             "'As the oracle saw it' reproduces what a smart contract would have read at that "
-             "instant. 'Best estimate' uses every checkpoint now known — better for reconciliation. "
-             "They differ only inside publication gaps, by up to ~0.04 bps.",
+             "'As the oracle saw it' is the only faithful reproduction of the contract: the oracle "
+             "brackets on effective_at, which is what that field exists for. 'Hindsight' brackets on "
+             "timestamp instead — the oracle never does this, so it is an analytical view, not an "
+             "on-chain figure. They differ only inside publication gaps, by up to ~0.04 bps. To "
+             "reconcile to the official NAV/S, read the checkpoint itself (the third card).",
     )
 
 if query_clicked:
@@ -204,16 +212,29 @@ if query_clicked:
                             f'for {api_result["actual_utc"][:19]}Z instead.</span>')
                 elif api_result["snapped_to_nearest_available"]:
                     note = f'<span class="cap-warn">⚠️ Snapped to {api_result["actual_utc"][:19]}Z</span>'
+                elif view == onchain.HINDSIGHT_VIEW:
+                    # The API only implements effective_at bracketing, so it cannot follow the
+                    # hindsight toggle. Without saying so, it looks like a discrepancy.
+                    note = ('<span class="cap-warn">Oracle-view semantics only — cannot follow the '
+                            'hindsight setting, so this will differ from the card beside it.</span>')
                 else:
                     note = '<span class="cap-ok">Continuous price, exact timestamp</span>'
                 st.markdown(f'<div class="result-caption-slot">{note}</div>', unsafe_allow_html=True)
 
     with chain_col:
         with st.container(border=True):
+            # Only the oracle view reproduces what the contract actually returns. The
+            # hindsight view brackets by `timestamp`, which the oracle never does, so
+            # presenting it as "On-chain Oracle" would misattribute a figure the oracle
+            # never reported. Retitled and tagged accordingly.
+            is_oracle_view = view == onchain.ORACLE_VIEW
             st.markdown('<div class="result-icon">🔗</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="result-label-row"><span class="result-label">On-chain Oracle'
-                '<span class="derived-tag">derived</span></span></div>',
+                '<div class="result-label-row"><span class="result-label">'
+                + ("On-chain Oracle<span class=\"derived-tag\">derived</span>"
+                   if is_oracle_view else
+                   "Continuous NAV/S<span class=\"hindsight-tag\">hindsight</span>")
+                + '</span></div>',
                 unsafe_allow_html=True,
             )
             chain_result = None
@@ -231,6 +252,17 @@ if query_clicked:
                 if chain_result["stale"]:
                     note = (f'<span class="cap-warn">⚠️ {chain_result["age_days"]:.1f} days past the last checkpoint — '
                             'beyond the oracle\'s 5-day expiry. Treat as unusable.</span>')
+                elif not is_oracle_view:
+                    # Say plainly what the oracle itself reported, so this figure can never
+                    # be recorded as the oracle's output.
+                    try:
+                        as_oracle = onchain.get_onchain_nav_per_share_at(
+                            target_dt, view=onchain.ORACLE_VIEW)
+                        actual = f'The oracle itself reported ${as_oracle["price"]:.6f} here.'
+                    except Exception:
+                        actual = ""
+                    note = ('<span class="cap-warn">⚠️ Not the oracle\'s output — recomputed using '
+                            f'checkpoints published later. {actual}</span>')
                 elif chain_result["extrapolated"]:
                     note = (f'<span class="cap-warn">Extrapolated {chain_result["age_days"]:.2f} days '
                             f'past checkpoint {chain_result["later_index"]}</span>')
@@ -304,6 +336,17 @@ if query_clicked:
                     "interpolation between two daily anchors — this number is stored in no block, so "
                     "the figures below are what make it reproducible."
                 )
+                if chain_result["view"] != onchain.ORACLE_VIEW:
+                    st.warning(
+                        "**This is not the oracle's output.** The bracketing view is set to "
+                        "`hindsight`, which selects checkpoints by `timestamp`. The contract selects "
+                        "by `effective_at` and never does this, so the figure above is an analytical "
+                        "recomputation using checkpoints that were not yet published at the queried "
+                        "instant. Do not record it as an on-chain oracle value — switch to "
+                        "*As the oracle saw it* for that. The inputs below still reproduce exactly "
+                        "on Etherscan, because `calculateRealtimeNavs` is a pure function that "
+                        "computes whatever checkpoints you hand it."
+                    )
 
                 st.markdown("###### Re-perform this on Etherscan")
                 st.markdown(
