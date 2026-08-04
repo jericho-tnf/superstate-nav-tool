@@ -1,2 +1,3 @@
 streamlit
 requests
+tzdata   # zoneinfo has no tz database on Windows without this

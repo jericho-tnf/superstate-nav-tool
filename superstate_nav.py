@@ -1,102 +1,253 @@
 """
-superstate_nav.py — Query Superstate USTB/USCC NAV per share at a specific timestamp.
-Requires: pip install requests
+superstate_nav.py — Query Superstate NAV per share from the off-chain API.
+
+Two distinct series live here, and conflating them is the main hazard:
+
+  real-time-price  the continuous NAV, defined at every second, accruing yield
+                   between daily strikes. Matches the on-chain oracle exactly.
+  nav-daily        the officially reported daily NAV — one struck value per business
+                   day, as of 17:00 ET.
+
+Two API behaviours to guard against, both confirmed live:
+
+  * A timestamp before the fund's price history returns "0.000000" with your own
+    timestamp echoed back, so nothing marks it as missing. Treated as an error here.
+  * nav-daily forward-fills indefinitely. Ask for a Saturday, a market holiday, or
+    2026-12-31 and it stamps your requested date into `net_asset_value_date` and
+    returns the last struck value. That field therefore carries no provenance;
+    resolve_daily_nav() establishes the real as-of date instead.
+
+Requires: pip install requests tzdata
 """
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
 import requests
-from datetime import datetime, timezone, date, time
+
+from nav_time import iso, strike_utc, to_utc, utc_today
+
+NAV_UNITS = Decimal(10 ** 6)  # the oracle stores NAV/share in 1e-6 units
+_MATCH_TOLERANCE = Decimal("0.0000005")
 
 BASE_URL = "https://api.superstate.com"
 FUND_IDS = {"USTB": 1}
 
+# Funds whose officially reported daily NAV the API serves, even where the continuous
+# real-time-price endpoint does not respond. USCC (id 2) is daily-only: its
+# real-time-price returns HTTP 400 at every timestamp tried.
+DAILY_ONLY_FUND_IDS = {"USCC": 2}
 
-def _fund_id(fund):
+
+class NavUnavailable(RuntimeError):
+    """The requested NAV does not exist, as opposed to the request having failed."""
+
+
+def _fund_id(fund, allow_daily_only=False):
     if isinstance(fund, int):
         return fund
-    fid = FUND_IDS.get(fund.upper())
-    if fid is None:
-        raise ValueError(f"Unknown fund '{fund}'. Use one of {list(FUND_IDS)} or a numeric id.")
-    return fid
+    known = dict(FUND_IDS)
+    if allow_daily_only:
+        known.update(DAILY_ONLY_FUND_IDS)
+    fund_id = known.get(fund.upper())
+    if fund_id is None:
+        raise ValueError(f"Unknown fund {fund!r}. Use one of {sorted(known)} or a numeric id.")
+    return fund_id
 
 
 def get_nav_per_share_at(when, fund="USTB"):
+    """The continuous NAV/share for `fund` at a point in time.
+
+    `when` may be a datetime (naive treated as UTC), a date (that day's 17:00 ET
+    strike), or None for now.
     """
-    Return the continuous NAV/share for `fund` at a specific point in time.
+    fund_id = _fund_id(fund)
+    requested_dt = None if when is None else to_utc(when)
+    unix_ts = None if requested_dt is None else int(requested_dt.timestamp())
 
-    `when` can be:
-      - a datetime (naive datetimes are assumed UTC)
-      - a date (interpreted as 23:59:00 UTC on that date)
-      - None (defaults to "now")
-    """
-    fid = _fund_id(fund)
-
-    if when is None:
-        unix_ts, requested_dt = None, None
-    else:
-        if isinstance(when, datetime):
-            dt = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
-        elif isinstance(when, date):
-            dt = datetime.combine(when, time(23, 59, 0), tzinfo=timezone.utc)
-        else:
-            raise TypeError("when must be a datetime, date, or None")
-        requested_dt = dt.astimezone(timezone.utc)
-        unix_ts = int(requested_dt.timestamp())
-
-    resp = requests.post(
-        f"{BASE_URL}/v1/funds/{fid}/real-time-price",
+    response = requests.post(
+        f"{BASE_URL}/v1/funds/{fund_id}/real-time-price",
         json={"unix_timestamp": unix_ts},
         timeout=10,
     )
-    resp.raise_for_status()
-    data = resp.json()
+    response.raise_for_status()
+    data = response.json()
 
-    actual_dt = datetime.fromtimestamp(data["unix_timestamp"], tz=timezone.utc)
-    snapped = requested_dt is not None and abs((actual_dt - requested_dt).total_seconds()) > 1
+    price = Decimal(str(data["price"]))
+    actual_dt = datetime.fromtimestamp(int(data["unix_timestamp"]), tz=timezone.utc)
 
+    if price == 0:
+        stamp = (requested_dt or actual_dt).strftime("%Y-%m-%d %H:%M")
+        raise NavUnavailable(
+            f"{fund} has no continuous price at {stamp} UTC. The API returned 0.000000, "
+            "which means the timestamp predates the fund's price history — it is not a NAV of zero."
+        )
+
+    drift_seconds = 0.0 if requested_dt is None else (actual_dt - requested_dt).total_seconds()
     return {
         "fund": fund,
-        "price": float(data["price"]),
+        "price": float(price),
+        "price_decimal": price,
         "requested_utc": requested_dt.isoformat() if requested_dt else None,
         "actual_utc": actual_dt.isoformat(),
-        "snapped_to_nearest_available": snapped,
+        "drift_seconds": drift_seconds,
+        # A future timestamp is silently clamped to "now" rather than rejected.
+        "clamped_from_future": requested_dt is not None and drift_seconds < -60,
+        "snapped_to_nearest_available": requested_dt is not None and abs(drift_seconds) > 1,
     }
 
 
-def get_daily_close_nav(day, fund="USTB"):
-    """Superstate's officially reported daily NAV/S for a calendar date."""
-    fid = _fund_id(fund)
-    ds = day.isoformat() if isinstance(day, date) else day
-    resp = requests.get(
-        f"{BASE_URL}/v1/funds/{fid}/nav-daily",
-        params={"start_date": ds, "end_date": ds},
-        timeout=10,
+def get_daily_nav_rows(start, end, fund="USTB"):
+    """Raw nav-daily rows for a date range, oldest first.
+
+    Remember these are forward-filled; use resolve_daily_nav() for provenance.
+    """
+    fund_id = _fund_id(fund, allow_daily_only=True)
+    response = requests.get(
+        f"{BASE_URL}/v1/funds/{fund_id}/nav-daily",
+        params={
+            "start_date": start.isoformat() if isinstance(start, date) else start,
+            "end_date": end.isoformat() if isinstance(end, date) else end,
+        },
+        timeout=15,
     )
-    resp.raise_for_status()
-    rows = resp.json()
+    response.raise_for_status()
+    return sorted(response.json(), key=lambda row: row["net_asset_value_date"][-4:] +
+                  row["net_asset_value_date"][:2] + row["net_asset_value_date"][3:5])
+
+
+def get_daily_close_nav(day, fund="USTB"):
+    """The raw nav-daily row for one date, or None.
+
+    The row's `net_asset_value_date` is whatever date you asked for, not the date the
+    NAV was struck. Prefer resolve_daily_nav().
+    """
+    rows = get_daily_nav_rows(day, day, fund)
     return rows[0] if rows else None
+
+
+def resolve_daily_nav(day, fund="USTB"):
+    """The officially reported daily NAV for `day`, with its true as-of date.
+
+    Because the API forward-fills, this cross-checks the on-chain checkpoint series to
+    establish whether `day` actually struck a NAV. A checkpoint exists if and only if
+    the fund struck that date, which distinguishes real strikes from weekends, market
+    holidays, and business days whose strike has not published yet — no holiday
+    calendar required.
+
+    Returns a dict whose `status` is one of:
+      strike       `day` struck this NAV itself
+      weekend      no strike; value carried forward from an earlier date
+      holiday      market holiday on a weekday; value carried forward
+      pending      `day` is a business day whose strike has not been published yet
+      unavailable  the API has no row at all (before the fund's history)
+    """
+    if fund.upper() != "USTB":
+        raise ValueError(
+            "resolve_daily_nav cross-checks the USTB on-chain oracle, so it only "
+            f"supports USTB; got {fund!r}. Use get_daily_close_nav for other funds."
+        )
+
+    import superstate_onchain_nav as onchain
+
+    row = get_daily_close_nav(day, fund)
+    if row is None:
+        return {
+            "requested_date": day,
+            "as_of_date": None,
+            "as_of_utc": None,
+            "nav": None,
+            "nav_text": None,
+            "status": "unavailable",
+            "detail": f"The API has no daily NAV row for {day:%Y-%m-%d}.",
+            "checkpoint_index": None,
+            "carried_forward": False,
+        }
+
+    nav_text = row["net_asset_value"]
+    common = {
+        "requested_date": day,
+        "nav": float(nav_text),
+        "nav_text": nav_text,
+        "assets_under_management": row.get("assets_under_management"),
+        "outstanding_shares": row.get("outstanding_shares"),
+        "api_reported_date": row["net_asset_value_date"],
+    }
+
+    struck = onchain.find_checkpoint_for_date(day)
+    if struck is not None:
+        return {
+            **common,
+            "as_of_date": day,
+            "as_of_utc": strike_utc(day),
+            "status": "strike",
+            "detail": f"Struck {day:%a %d %b %Y} at 17:00 ET, on-chain checkpoint {struck['index']}.",
+            "checkpoint_index": struck["index"],
+            "carried_forward": False,
+            "matches_onchain": abs(Decimal(nav_text) - Decimal(struck["navs"]) / NAV_UNITS) < _MATCH_TOLERANCE,
+        }
+
+    # No strike on `day`. If the oracle has already moved past it, the date was a
+    # non-business day; if not, the strike simply has not been published yet.
+    previous = onchain.checkpoint_on_or_before(day)
+    latest = onchain.latest_checkpoint()
+    day_strike_ts = int(strike_utc(day).timestamp())
+
+    if latest["timestamp"] < day_strike_ts:
+        status = "pending"
+        detail = (
+            f"{day:%a %d %b %Y} has no published strike yet — the latest on-chain checkpoint "
+            f"is {iso(latest['timestamp'])[:10]}. Showing that value."
+        )
+    elif day.weekday() >= 5:
+        status = "weekend"
+        detail = f"No NAV struck on {day:%a %d %b %Y} (weekend). Showing the previous close."
+    else:
+        status = "holiday"
+        detail = f"No NAV struck on {day:%a %d %b %Y} (market holiday). Showing the previous close."
+
+    as_of_date = None
+    if previous is not None:
+        as_of_date = datetime.fromtimestamp(previous["timestamp"], tz=timezone.utc).date()
+
+    return {
+        **common,
+        "as_of_date": as_of_date,
+        "as_of_utc": strike_utc(as_of_date) if as_of_date else None,
+        "status": status,
+        "detail": detail,
+        "checkpoint_index": previous["index"] if previous else None,
+        "carried_forward": True,
+        "matches_onchain": (
+            previous is not None
+            and abs(Decimal(nav_text) - Decimal(previous["navs"]) / NAV_UNITS) < _MATCH_TOLERANCE
+        ),
+    }
 
 
 if __name__ == "__main__":
     import sys
-    from datetime import datetime as _dt
 
-    if len(sys.argv) > 1:
-        raw = sys.argv[1]
-        # Accepts "2026-08-01" (defaults to 23:59:00 UTC) or "2026-08-01T14:32:07"
-        if "T" in raw or " " in raw:
-            raw = raw.replace(" ", "T")
-            target_dt = _dt.fromisoformat(raw).replace(tzinfo=timezone.utc)
-        else:
-            target_dt = datetime.combine(date.fromisoformat(raw), time(23, 59, 0), tzinfo=timezone.utc)
-    else:
-        target_dt = None
+    from nav_time import describe_offset_from_strike, parse_cli_instant
 
+    target_dt = parse_cli_instant(sys.argv[1]) if len(sys.argv) > 1 else strike_utc(utc_today())
     fund = sys.argv[2] if len(sys.argv) > 2 else "USTB"
 
-    rt = get_nav_per_share_at(target_dt, fund=fund)
-    daily = get_daily_close_nav(target_dt.date() if target_dt else date.today(), fund=fund)
+    realtime = get_nav_per_share_at(target_dt, fund=fund)
+    print(f"{fund} continuous NAV/S at {target_dt.isoformat()}: {realtime['price']:.6f}")
+    print(f"  ({describe_offset_from_strike(target_dt, target_dt.date())})")
+    if realtime["clamped_from_future"]:
+        print(f"  WARNING: that timestamp is in the future; the API answered for "
+              f"{realtime['actual_utc']} instead.")
+    elif realtime["snapped_to_nearest_available"]:
+        print(f"  NOTE: snapped to {realtime['actual_utc']}.")
 
-    label = target_dt.isoformat() if target_dt else "now"
-    print(f"{fund} continuous NAV/S as of {label} UTC: {rt['price']}")
-    print(f"  (actual oracle timestamp used: {rt['actual_utc']}, snapped={rt['snapped_to_nearest_available']})")
-    if daily:
-        print(f"{fund} officially reported Daily NAV/S for {target_dt.date() if target_dt else date.today()}: {daily['net_asset_value']}")
+    if fund.upper() == "USTB":
+        daily = resolve_daily_nav(target_dt.date(), fund=fund)
+        if daily["status"] == "unavailable":
+            print(f"{fund} daily NAV: {daily['detail']}")
+        else:
+            print(f"{fund} official daily NAV: {daily['nav_text']} "
+                  f"(as of {daily['as_of_date']:%Y-%m-%d} 17:00 ET)")
+            print(f"  status={daily['status']}  {daily['detail']}")
+            if daily["carried_forward"]:
+                print(f"  CAUTION: this is NOT {target_dt.date():%Y-%m-%d}'s NAV.")
