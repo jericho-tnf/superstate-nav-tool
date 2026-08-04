@@ -261,13 +261,53 @@ if query_clicked:
 
             if chain_result:
                 st.markdown("---")
+                args = chain_result["etherscan_inputs"]
+                e_idx, l_idx = chain_result["earlier_index"], chain_result["later_index"]
+                bracket_key = "effective_at" if chain_result["view"] == onchain.ORACLE_VIEW else "timestamp"
+
                 st.markdown(
-                    f"**On-chain** — value `{chain_result['price_units']}` (1e-6 units) computed by "
-                    f"`calculateRealtimeNavs` from checkpoints `{chain_result['earlier_index']}` "
-                    f"({chain_result['earlier_checkpoint_utc']}) and `{chain_result['later_index']}` "
-                    f"({chain_result['later_checkpoint_utc']}, effective "
-                    f"{chain_result['later_effective_utc']}). Straight-line interpolation between two "
-                    "daily anchors — this number is not stored in any block."
+                    f"**On-chain** — `{chain_result['price_units']}` (1e-6 units) computed by "
+                    f"`calculateRealtimeNavs` from checkpoints `{e_idx}` and `{l_idx}`. Straight-line "
+                    "interpolation between two daily anchors — this number is stored in no block, so "
+                    "the figures below are what make it reproducible."
                 )
+
+                st.markdown("###### Re-perform this on Etherscan")
+                st.markdown(
+                    f"[Open the oracle's Read Contract tab]({onchain.ETHERSCAN_READ_URL}) → "
+                    f"**Step 1:** call `checkpoints` for indices `{e_idx}` and `{l_idx}` to confirm the "
+                    f"two anchors below are genuinely stored. **Step 2:** paste these five values into "
+                    f"`calculateRealtimeNavs`."
+                )
+                st.code("\n".join(f"{name}\n{args[name]}" for name in onchain.CALC_PARAM_ORDER),
+                        language="text")
+                st.markdown(
+                    f"Expected answer: **`{chain_result['price_units']}`** → ÷ 1e6 → "
+                    f"**${chain_result['price']:.6f}** — must equal the card above."
+                )
+
+                st.markdown("###### How each input was derived")
+                st.markdown(f"""
+| Input | Value | Where it comes from |
+|---|---|---|
+| `targetTimestamp` | `{args['targetTimestamp']}` | Your query instant, {chain_result['requested_utc']}, as a unix timestamp |
+| `earlierCheckpointNavs` | `{args['earlierCheckpointNavs']}` | `checkpoints({e_idx}).navs` |
+| `earlierCheckpointTimestamp` | `{args['earlierCheckpointTimestamp']}` | `checkpoints({e_idx}).timestamp` — {chain_result['earlier_checkpoint_utc']} |
+| `laterCheckpointNavs` | `{args['laterCheckpointNavs']}` | `checkpoints({l_idx}).navs` |
+| `laterCheckpointTimestamp` | `{args['laterCheckpointTimestamp']}` | `checkpoints({l_idx}).timestamp` — {chain_result['later_checkpoint_utc']} |
+""")
+                st.markdown(
+                    f"**Why checkpoints {e_idx} and {l_idx}?** In the `{chain_result['view']}` view the "
+                    f"bracket is keyed on **`{bracket_key}`**: checkpoint `{l_idx}` is the newest whose "
+                    f"`{bracket_key}` falls at or before your target instant, and `{e_idx}` is the one "
+                    f"before it. Checkpoint `{l_idx}` became effective "
+                    f"{chain_result['later_effective_utc']}."
+                )
+                if chain_result["extrapolated"]:
+                    st.info(
+                        f"Your target is **{chain_result['age_days']:.2f} days past** checkpoint {l_idx}, "
+                        "so the contract extrapolates along that line rather than interpolating within "
+                        "it. The figure is a projection, not a struck NAV."
+                    )
                 st.caption(f"Oracle contract `{onchain.ORACLE_ADDRESS}` · bracketing view "
-                           f"`{chain_result['view']}`")
+                           f"`{chain_result['view']}` · selector `0x{onchain.SEL_CALC_REALTIME_NAVS}`")

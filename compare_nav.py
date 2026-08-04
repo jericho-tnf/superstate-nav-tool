@@ -1,9 +1,10 @@
 """compare_nav.py — Reconcile the off-chain API, the on-chain oracle, and the official daily NAV.
 
 Usage:
-    python compare_nav.py                      # today's 17:00 ET strike
-    python compare_nav.py 2026-07-27           # that date's strike
-    python compare_nav.py 2026-07-27T23:59:59  # a specific UTC instant
+    python compare_nav.py                            # today's 17:00 ET strike
+    python compare_nav.py 2026-07-27                 # that date's strike
+    python compare_nav.py 2026-07-27T23:59:59        # a specific UTC instant
+    python compare_nav.py 2026-07-27 --worksheet     # + Etherscan re-performance steps
 """
 import sys
 
@@ -12,7 +13,9 @@ from nav_time import describe_offset_from_strike, parse_cli_instant, strike_utc,
 from superstate_nav import NavUnavailable, get_nav_per_share_at, resolve_daily_nav
 
 if __name__ == "__main__":
-    target_dt = parse_cli_instant(sys.argv[1]) if len(sys.argv) > 1 else strike_utc(utc_today())
+    argv = [a for a in sys.argv[1:] if not a.startswith("--")]
+    want_worksheet = "--worksheet" in sys.argv
+    target_dt = parse_cli_instant(argv[0]) if argv else strike_utc(utc_today())
     target_date = target_dt.date()
 
     print(f"USTB NAV/S at {target_dt.isoformat()}")
@@ -54,3 +57,15 @@ if __name__ == "__main__":
                   "oracle's 5-day expiry window.")
         elif chain["extrapolated"]:
             print(f"  NOTE: extrapolated {chain['age_days']:.2f} days past the last usable strike.")
+
+    if want_worksheet and chain is not None:
+        for view in (onchain.ORACLE_VIEW, onchain.HINDSIGHT_VIEW):
+            try:
+                result = onchain.get_onchain_nav_per_share_at(target_dt, view=view)
+            except (ValueError, onchain.OracleRpcError) as exc:
+                print(f"\n{'=' * 72}\nWORKSHEET [{view}] unavailable: {exc}")
+                continue
+            print(f"\n{'=' * 72}")
+            print(f"ETHERSCAN RE-PERFORMANCE WORKSHEET  [{view} view]")
+            print("=" * 72)
+            print(onchain.etherscan_worksheet(result))

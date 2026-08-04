@@ -35,6 +35,18 @@ CHECKPOINT_EXPIRATION_PERIOD = 5 * 24 * 60 * 60
 SEL_CHECKPOINTS = "b8a24252"           # checkpoints(uint256)
 SEL_CALC_REALTIME_NAVS = "62955b9b"    # calculateRealtimeNavs(uint128,uint128,uint128,uint128,uint128)
 
+ETHERSCAN_READ_URL = f"https://etherscan.io/address/{ORACLE_ADDRESS}#readContract"
+
+# ABI parameter order of calculateRealtimeNavs, which is also the order the Etherscan
+# Read Contract form presents. Keep these aligned or the worksheet misleads.
+CALC_PARAM_ORDER = (
+    "targetTimestamp",
+    "earlierCheckpointNavs",
+    "earlierCheckpointTimestamp",
+    "laterCheckpointNavs",
+    "laterCheckpointTimestamp",
+)
+
 # Which checkpoint field to bracket the target instant against.
 #
 #   ORACLE_VIEW    keys on effective_at, reproducing exactly what the oracle reported
@@ -272,7 +284,57 @@ def get_onchain_nav_per_share_at(when, view=ORACLE_VIEW):
         "age_days": age_seconds / 86400,
         "stale": age_seconds > CHECKPOINT_EXPIRATION_PERIOD,
         "interpolated_from_daily": True,
+        # Exactly what to paste into the Etherscan Read Contract form to re-perform
+        # this figure by hand. Ordered to match the ABI and the form's field order.
+        "etherscan_inputs": {
+            "targetTimestamp": target_ts,
+            "earlierCheckpointNavs": earlier["navs"],
+            "earlierCheckpointTimestamp": earlier["timestamp"],
+            "laterCheckpointNavs": later["navs"],
+            "laterCheckpointTimestamp": later["timestamp"],
+        },
     }
+
+
+def etherscan_worksheet(result):
+    """A copy-pasteable re-performance worksheet for a get_onchain_nav_per_share_at result.
+
+    Reproducing this on a block explorer tests the only two things this module decides:
+    the target timestamp it derived from your query, and which two checkpoints it picked.
+    The interpolation itself is the contract's, so it is not under test.
+    """
+    args = result["etherscan_inputs"]
+    key = _BRACKET_KEY[result["view"]]
+    e_idx, l_idx = result["earlier_index"], result["later_index"]
+
+    lines = [
+        f"Oracle contract : {ORACLE_ADDRESS}",
+        f"Read Contract   : {ETHERSCAN_READ_URL}",
+        "",
+        f"STEP 1 - read the two stored checkpoints (function: checkpoints)",
+        f"  checkpoints({e_idx})  ->  navs={args['earlierCheckpointNavs']}  "
+        f"timestamp={args['earlierCheckpointTimestamp']}  ({result['earlier_checkpoint_utc']})",
+        f"  checkpoints({l_idx})  ->  navs={args['laterCheckpointNavs']}  "
+        f"timestamp={args['laterCheckpointTimestamp']}  ({result['later_checkpoint_utc']})",
+        "",
+        f"STEP 2 - paste into calculateRealtimeNavs (selector 0x{SEL_CALC_REALTIME_NAVS})",
+    ]
+    for name in CALC_PARAM_ORDER:
+        lines.append(f"  {name:28s} {args[name]}")
+    lines += [
+        "",
+        f"STEP 3 - expected result",
+        f"  answer (uint128)             {result['price_units']}",
+        f"  divided by 1e{DECIMALS}                ${result['price']:.6f}",
+        "",
+        f"Bracket rationale ({result['view']} view, keyed on {key}):",
+        f"  checkpoint {l_idx} is the newest whose {key} is at or before the target instant;",
+        f"  checkpoint {e_idx} is the one before it. Those two define the line.",
+    ]
+    if result["extrapolated"]:
+        lines.append(f"  The target is {result['age_days']:.2f} days PAST checkpoint {l_idx}, so this "
+                     f"extrapolates beyond the line rather than interpolating within it.")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
