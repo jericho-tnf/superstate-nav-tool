@@ -1,10 +1,11 @@
-"""Superstate NAV/share lookup — off-chain API vs on-chain oracle vs official daily NAV."""
-from datetime import datetime, time, timezone
+"""Superstate NAV/share lookup — off-chain API vs on-chain oracle vs official daily NAV/S."""
+from datetime import datetime, timezone
 
 import streamlit as st
 
 import superstate_onchain_nav as onchain
-from nav_time import describe_offset_from_checkpoint, end_of_day_utc, checkpoint_utc, utc_today
+from nav_time import (NEW_YORK, checkpoint_utc, describe_offset_from_checkpoint,
+                      end_of_day_utc, utc_today)
 from superstate_nav import FUND_IDS, NavUnavailable, get_nav_per_share_at, resolve_daily_nav
 
 STATUS_STYLE = {
@@ -14,6 +15,13 @@ STATUS_STYLE = {
     "pending": ("warn", "NAV/S checkpoint not yet published"),
     "unavailable": ("warn", "No data for this date"),
 }
+
+# Internal keys for the time-basis radio. Kept separate from the displayed labels so the
+# labels can carry a date-dependent UTC time without any branch keying off label text.
+PRESET_CHECKPOINT = "checkpoint"
+PRESET_EOD = "eod"
+PRESET_NOW = "now"
+PRESET_CUSTOM = "custom"
 
 st.set_page_config(page_title="Superstate NAV Lookup", page_icon="📈", layout="centered")
 
@@ -83,40 +91,56 @@ st.markdown("""
 with st.container(border=True):
     st.markdown('<div class="section-label">📅 Lookup Parameters</div>', unsafe_allow_html=True)
 
-    top_left, top_right = st.columns([2, 3])
+    # The date must be chosen before the time-basis options are rendered, because the
+    # checkpoint's UTC hour is date-dependent: 17:00 America/New_York is 21:00 UTC under
+    # EDT and 22:00 UTC under EST. Labelling it "17:00 ET" inside a control marked UTC
+    # forced the reader to do that conversion themselves.
+    top_left, top_mid, top_right = st.columns([2, 2, 1.4])
     with top_left:
         fund = st.selectbox("Fund", list(FUND_IDS.keys()))
-    with top_right:
-        # The NAV/S checkpoint is 17:00 America/New_York, which is 21:00 UTC under EDT and 22:00
-        # under EST — so the UTC instant to query is date-dependent, not a constant.
-        preset = st.radio(
-            "Time basis (UTC)",
-            ["NAV/S checkpoint — 17:00 ET", "End of day — 23:59:59", "Now", "Custom"],
-            horizontal=True,
-            help="Only at the checkpoint are all three figures comparable. End of day sits "
-                 "2h (EST) to 3h (EDT) later, so the continuous NAV reads above the daily NAV.",
-        )
-
-    bottom_left, bottom_mid, bottom_right = st.columns([2, 2, 1.4])
-    with bottom_left:
+    with top_mid:
         query_date = st.date_input("Date (UTC)", value=utc_today())
-    with bottom_mid:
-        if preset == "Custom":
-            # Streamlit's time_input rejects step < 60s, so minute granularity is the
-            # floor here. That is finer than the data: at ~0.00106/day accrual the 6th
-            # decimal only moves every ~82 seconds.
-            custom_time = st.time_input("Time (UTC)", value=time(21, 0), step=60)
-        else:
-            custom_time = None
-            st.markdown('<div style="height:29px;"></div>', unsafe_allow_html=True)
-            st.caption({
-                "NAV/S checkpoint — 17:00 ET": f"→ {checkpoint_utc(query_date).strftime('%H:%M')} UTC on this date",
-                "End of day — 23:59:59": "→ 23:59:59 UTC",
-                "Now": "→ current UTC time",
-            }[preset])
-    with bottom_right:
+    with top_right:
         st.markdown('<div style="height:29px;"></div>', unsafe_allow_html=True)
         query_clicked = st.button("Query NAV →", use_container_width=True)
+
+    checkpoint_dt = checkpoint_utc(query_date)
+    now_dt = datetime.now(timezone.utc)
+
+    # Stable internal keys with a format_func, so the displayed label can change freely
+    # without any branch or lookup keying off the label text.
+    preset = st.radio(
+        "Time basis (all times UTC)",
+        [PRESET_CHECKPOINT, PRESET_EOD, PRESET_NOW, PRESET_CUSTOM],
+        horizontal=True,
+        format_func=lambda p: {
+            PRESET_CHECKPOINT: f"NAV/S checkpoint — {checkpoint_dt:%H:%M:%S}",
+            PRESET_EOD: "End of day — 23:59:59",
+            PRESET_NOW: f"Now — {now_dt:%H:%M:%S}",
+            PRESET_CUSTOM: "Custom",
+        }[p],
+        help="Only at the NAV/S checkpoint are all three figures comparable. End of day sits "
+             "2h (EST) to 3h (EDT) later, so the continuous price reads above the daily NAV/S.",
+    )
+
+    custom_time = None
+    if preset == PRESET_CUSTOM:
+        # Streamlit's time_input rejects step < 60s, so minute granularity is the floor.
+        # That is finer than the data anyway: at ~0.00106/day accrual the 6th decimal
+        # only moves every ~82 seconds. Use the End of day preset if you need :59.
+        custom_time = st.time_input("Time (UTC)", value=checkpoint_dt.time(), step=60)
+        st.caption(f"Minute granularity — the displayed NAV/S only changes every ~82s. "
+                   f"For 23:59:59 use the End of day preset.")
+    elif preset == PRESET_CHECKPOINT:
+        st.caption(f"{checkpoint_dt:%H:%M:%S} UTC on {query_date:%d %b %Y} = 17:00 "
+                   f"{checkpoint_dt.astimezone(NEW_YORK):%Z} — the fund's daily valuation point. "
+                   f"This is 22:00 UTC under EST and 21:00 UTC under EDT, so it moves with US DST.")
+    elif preset == PRESET_EOD:
+        st.caption(f"23:59:59 UTC — {(end_of_day_utc(query_date) - checkpoint_dt).total_seconds()/3600:.2f}h "
+                   f"after the {checkpoint_dt:%H:%M} UTC checkpoint, so the continuous price will read above "
+                   "the official daily NAV/S.")
+    else:
+        st.caption(f"Current UTC time, {now_dt:%Y-%m-%d %H:%M:%S}Z.")
 
     view = st.radio(
         "On-chain bracketing",
@@ -133,11 +157,11 @@ with st.container(border=True):
     )
 
 if query_clicked:
-    if preset == "NAV/S checkpoint — 17:00 ET":
+    if preset == PRESET_CHECKPOINT:
         target_dt = checkpoint_utc(query_date)
-    elif preset == "End of day — 23:59:59":
+    elif preset == PRESET_EOD:
         target_dt = end_of_day_utc(query_date)
-    elif preset == "Now":
+    elif preset == PRESET_NOW:
         target_dt = datetime.now(timezone.utc)
     else:
         target_dt = datetime.combine(query_date, custom_time, tzinfo=timezone.utc)
