@@ -97,26 +97,31 @@ with st.container(border=True):
     # forced the reader to do that conversion themselves.
     top_left, top_mid, top_right = st.columns([2, 2, 1.4])
     with top_left:
-        fund = st.selectbox("Fund", list(FUND_IDS.keys()))
+        fund = st.selectbox("Fund", list(FUND_IDS.keys()), key="fund")
     with top_mid:
-        query_date = st.date_input("Date (UTC)", value=utc_today())
+        query_date = st.date_input("Date (UTC)", value=utc_today(), key="query_date")
     with top_right:
         st.markdown('<div style="height:29px;"></div>', unsafe_allow_html=True)
         query_clicked = st.button("Query NAV →", use_container_width=True)
 
     checkpoint_dt = checkpoint_utc(query_date)
-    now_dt = datetime.now(timezone.utc)
 
-    # Stable internal keys with a format_func, so the displayed label can change freely
-    # without any branch or lookup keying off the label text.
+    # Every widget below carries an explicit `key`. Without one, Streamlit derives the
+    # widget's identity from its parameters, so anything volatile reaching the widget --
+    # a clock in a format_func label, or the checkpoint time changing with the date --
+    # makes it look like a brand new widget on the next rerun and silently resets it to
+    # the first option. A stable key pins the identity and keeps the choice in
+    # session_state. The current time is therefore kept out of the labels entirely and
+    # shown in the caption instead, which is not a widget.
     preset = st.radio(
         "Time basis (all times UTC)",
         [PRESET_CHECKPOINT, PRESET_EOD, PRESET_NOW, PRESET_CUSTOM],
         horizontal=True,
+        key="time_basis",
         format_func=lambda p: {
             PRESET_CHECKPOINT: f"NAV/S checkpoint — {checkpoint_dt:%H:%M:%S}",
             PRESET_EOD: "End of day — 23:59:59",
-            PRESET_NOW: f"Now — {now_dt:%H:%M:%S}",
+            PRESET_NOW: "Now",
             PRESET_CUSTOM: "Custom",
         }[p],
         help="Only at the NAV/S checkpoint are all three figures comparable. End of day sits "
@@ -128,9 +133,10 @@ with st.container(border=True):
         # Streamlit's time_input rejects step < 60s, so minute granularity is the floor.
         # That is finer than the data anyway: at ~0.00106/day accrual the 6th decimal
         # only moves every ~82 seconds. Use the End of day preset if you need :59.
-        custom_time = st.time_input("Time (UTC)", value=checkpoint_dt.time(), step=60)
-        st.caption(f"Minute granularity — the displayed NAV/S only changes every ~82s. "
-                   f"For 23:59:59 use the End of day preset.")
+        custom_time = st.time_input("Time (UTC)", value=checkpoint_dt.time(), step=60,
+                                    key="custom_time")
+        st.caption("Minute granularity — the displayed NAV/S only changes every ~82s. "
+                   "For 23:59:59 use the End of day preset.")
     elif preset == PRESET_CHECKPOINT:
         st.caption(f"{checkpoint_dt:%H:%M:%S} UTC on {query_date:%d %b %Y} = 17:00 "
                    f"{checkpoint_dt.astimezone(NEW_YORK):%Z} — the fund's daily valuation point. "
@@ -140,12 +146,15 @@ with st.container(border=True):
                    f"after the {checkpoint_dt:%H:%M} UTC checkpoint, so the continuous price will read above "
                    "the official daily NAV/S.")
     else:
-        st.caption(f"Current UTC time, {now_dt:%Y-%m-%d %H:%M:%S}Z.")
+        st.caption(f"Current UTC time at page load, "
+                   f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z. The exact instant is "
+                   "resolved when you press Query.")
 
     view = st.radio(
         "On-chain bracketing",
         [onchain.ORACLE_VIEW, onchain.HINDSIGHT_VIEW],
         horizontal=True,
+        key="bracket_view",
         format_func=lambda v: {
             onchain.ORACLE_VIEW: "As the oracle saw it (by effective_at)",
             onchain.HINDSIGHT_VIEW: "Best estimate, all checkpoints known (by timestamp)",
