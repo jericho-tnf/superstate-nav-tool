@@ -4,8 +4,8 @@ superstate_nav.py — Query Superstate NAV per share from the off-chain API.
 Two distinct series live here, and conflating them is the main hazard:
 
   real-time-price  the continuous NAV, defined at every second, accruing yield
-                   between daily strikes. Matches the on-chain oracle exactly.
-  nav-daily        the officially reported daily NAV — one struck value per business
+                   between daily checkpoints. Matches the on-chain oracle exactly.
+  nav-daily        the officially reported daily NAV/S — one calculated value per business
                    day, as of 17:00 ET.
 
 Two API behaviours to guard against, both confirmed live:
@@ -14,7 +14,7 @@ Two API behaviours to guard against, both confirmed live:
     timestamp echoed back, so nothing marks it as missing. Treated as an error here.
   * nav-daily forward-fills indefinitely. Ask for a Saturday, a market holiday, or
     2026-12-31 and it stamps your requested date into `net_asset_value_date` and
-    returns the last struck value. That field therefore carries no provenance;
+    returns the last calculated value. That field therefore carries no provenance;
     resolve_daily_nav() establishes the real as-of date instead.
 
 Requires: pip install requests tzdata
@@ -24,7 +24,7 @@ from decimal import Decimal
 
 import requests
 
-from nav_time import iso, strike_utc, to_utc, utc_today
+from nav_time import iso, checkpoint_utc, to_utc, utc_today
 
 NAV_UNITS = Decimal(10 ** 6)  # the oracle stores NAV/share in 1e-6 units
 _MATCH_TOLERANCE = Decimal("0.0000005")
@@ -58,7 +58,7 @@ def get_nav_per_share_at(when, fund="USTB"):
     """The continuous NAV/share for `fund` at a point in time.
 
     `when` may be a datetime (naive treated as UTC), a date (that day's 17:00 ET
-    strike), or None for now.
+    NAV/S checkpoint), or None for now.
     """
     fund_id = _fund_id(fund)
     requested_dt = None if when is None else to_utc(when)
@@ -119,7 +119,7 @@ def get_daily_close_nav(day, fund="USTB"):
     """The raw nav-daily row for one date, or None.
 
     The row's `net_asset_value_date` is whatever date you asked for, not the date the
-    NAV was struck. Prefer resolve_daily_nav().
+    NAV/S was calculated. Prefer resolve_daily_nav().
     """
     rows = get_daily_nav_rows(day, day, fund)
     return rows[0] if rows else None
@@ -129,16 +129,16 @@ def resolve_daily_nav(day, fund="USTB"):
     """The officially reported daily NAV for `day`, with its true as-of date.
 
     Because the API forward-fills, this cross-checks the on-chain checkpoint series to
-    establish whether `day` actually struck a NAV. A checkpoint exists if and only if
-    the fund struck that date, which distinguishes real strikes from weekends, market
-    holidays, and business days whose strike has not published yet — no holiday
+    establish whether `day` has its own NAV/S. A checkpoint exists if and only if the
+    fund calculated a NAV/S that date, which distinguishes real checkpoints from weekends,
+    market holidays, and business days whose checkpoint has not published yet — no holiday
     calendar required.
 
     Returns a dict whose `status` is one of:
-      strike       `day` struck this NAV itself
-      weekend      no strike; value carried forward from an earlier date
+      checkpoint   `day` has its own NAV/S checkpoint
+      weekend      no checkpoint; value carried forward from an earlier date
       holiday      market holiday on a weekday; value carried forward
-      pending      `day` is a business day whose strike has not been published yet
+      pending      `day` is a business day whose checkpoint has not been published yet
       unavailable  the API has no row at all (before the fund's history)
     """
     if fund.upper() != "USTB":
@@ -173,37 +173,37 @@ def resolve_daily_nav(day, fund="USTB"):
         "api_reported_date": row["net_asset_value_date"],
     }
 
-    struck = onchain.find_checkpoint_for_date(day)
-    if struck is not None:
+    own_checkpoint = onchain.find_checkpoint_for_date(day)
+    if own_checkpoint is not None:
         return {
             **common,
             "as_of_date": day,
-            "as_of_utc": strike_utc(day),
-            "status": "strike",
-            "detail": f"Struck {day:%a %d %b %Y} at 17:00 ET, on-chain checkpoint {struck['index']}.",
-            "checkpoint_index": struck["index"],
+            "as_of_utc": checkpoint_utc(day),
+            "status": "checkpoint",
+            "detail": f"NAV/S calculated for {day:%a %d %b %Y} at 17:00 ET; on-chain checkpoint {own_checkpoint['index']}.",
+            "checkpoint_index": own_checkpoint["index"],
             "carried_forward": False,
-            "matches_onchain": abs(Decimal(nav_text) - Decimal(struck["navs"]) / NAV_UNITS) < _MATCH_TOLERANCE,
+            "matches_onchain": abs(Decimal(nav_text) - Decimal(own_checkpoint["navs"]) / NAV_UNITS) < _MATCH_TOLERANCE,
         }
 
-    # No strike on `day`. If the oracle has already moved past it, the date was a
-    # non-business day; if not, the strike simply has not been published yet.
+    # No checkpoint for `day`. If the oracle has already moved past it, the date was a
+    # non-business day; if not, the checkpoint simply has not been published yet.
     previous = onchain.checkpoint_on_or_before(day)
     latest = onchain.latest_checkpoint()
-    day_strike_ts = int(strike_utc(day).timestamp())
+    day_checkpoint_ts = int(checkpoint_utc(day).timestamp())
 
-    if latest["timestamp"] < day_strike_ts:
+    if latest["timestamp"] < day_checkpoint_ts:
         status = "pending"
         detail = (
-            f"{day:%a %d %b %Y} has no published strike yet — the latest on-chain checkpoint "
+            f"{day:%a %d %b %Y} has no published NAV/S checkpoint yet — the latest on-chain checkpoint "
             f"is {iso(latest['timestamp'])[:10]}. Showing that value."
         )
     elif day.weekday() >= 5:
         status = "weekend"
-        detail = f"No NAV struck on {day:%a %d %b %Y} (weekend). Showing the previous close."
+        detail = f"No NAV/S calculated on {day:%a %d %b %Y} (weekend). Showing the previous checkpoint."
     else:
         status = "holiday"
-        detail = f"No NAV struck on {day:%a %d %b %Y} (market holiday). Showing the previous close."
+        detail = f"No NAV/S calculated on {day:%a %d %b %Y} (market holiday). Showing the previous checkpoint."
 
     as_of_date = None
     if previous is not None:
@@ -212,7 +212,7 @@ def resolve_daily_nav(day, fund="USTB"):
     return {
         **common,
         "as_of_date": as_of_date,
-        "as_of_utc": strike_utc(as_of_date) if as_of_date else None,
+        "as_of_utc": checkpoint_utc(as_of_date) if as_of_date else None,
         "status": status,
         "detail": detail,
         "checkpoint_index": previous["index"] if previous else None,
@@ -227,14 +227,14 @@ def resolve_daily_nav(day, fund="USTB"):
 if __name__ == "__main__":
     import sys
 
-    from nav_time import describe_offset_from_strike, parse_cli_instant
+    from nav_time import describe_offset_from_checkpoint, parse_cli_instant
 
-    target_dt = parse_cli_instant(sys.argv[1]) if len(sys.argv) > 1 else strike_utc(utc_today())
+    target_dt = parse_cli_instant(sys.argv[1]) if len(sys.argv) > 1 else checkpoint_utc(utc_today())
     fund = sys.argv[2] if len(sys.argv) > 2 else "USTB"
 
     realtime = get_nav_per_share_at(target_dt, fund=fund)
     print(f"{fund} continuous NAV/S at {target_dt.isoformat()}: {realtime['price']:.6f}")
-    print(f"  ({describe_offset_from_strike(target_dt, target_dt.date())})")
+    print(f"  ({describe_offset_from_checkpoint(target_dt, target_dt.date())})")
     if realtime["clamped_from_future"]:
         print(f"  WARNING: that timestamp is in the future; the API answered for "
               f"{realtime['actual_utc']} instead.")
@@ -246,8 +246,8 @@ if __name__ == "__main__":
         if daily["status"] == "unavailable":
             print(f"{fund} daily NAV: {daily['detail']}")
         else:
-            print(f"{fund} official daily NAV: {daily['nav_text']} "
+            print(f"{fund} official daily NAV/S: {daily['nav_text']} "
                   f"(as of {daily['as_of_date']:%Y-%m-%d} 17:00 ET)")
             print(f"  status={daily['status']}  {daily['detail']}")
             if daily["carried_forward"]:
-                print(f"  CAUTION: this is NOT {target_dt.date():%Y-%m-%d}'s NAV.")
+                print(f"  CAUTION: this is NOT {target_dt.date():%Y-%m-%d}'s NAV/S.")

@@ -4,14 +4,14 @@ from datetime import datetime, time, timezone
 import streamlit as st
 
 import superstate_onchain_nav as onchain
-from nav_time import describe_offset_from_strike, end_of_day_utc, strike_utc, utc_today
+from nav_time import describe_offset_from_checkpoint, end_of_day_utc, checkpoint_utc, utc_today
 from superstate_nav import FUND_IDS, NavUnavailable, get_nav_per_share_at, resolve_daily_nav
 
 STATUS_STYLE = {
-    "strike": ("ok", "Struck this date at 17:00 ET"),
-    "weekend": ("warn", "No strike this date — weekend"),
-    "holiday": ("warn", "No strike this date — market holiday"),
-    "pending": ("warn", "Strike not yet published"),
+    "checkpoint": ("ok", "NAV/S calculated this date at 17:00 ET"),
+    "weekend": ("warn", "No NAV/S checkpoint this date — weekend"),
+    "holiday": ("warn", "No NAV/S checkpoint this date — market holiday"),
+    "pending": ("warn", "NAV/S checkpoint not yet published"),
     "unavailable": ("warn", "No data for this date"),
 }
 
@@ -75,7 +75,7 @@ st.markdown("""
         <div class="header-icon">📈</div>
         <div>
             <p class="header-title">Superstate NAV/Share Lookup</p>
-            <p class="header-subtitle">NAV per share at a UTC instant — off-chain API, on-chain oracle, and the official daily strike.</p>
+            <p class="header-subtitle">NAV per share at a UTC instant — off-chain API, on-chain oracle, and the official daily NAV/S checkpoint.</p>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -87,13 +87,13 @@ with st.container(border=True):
     with top_left:
         fund = st.selectbox("Fund", list(FUND_IDS.keys()))
     with top_right:
-        # The strike is 17:00 America/New_York, which is 21:00 UTC under EDT and 22:00
+        # The NAV/S checkpoint is 17:00 America/New_York, which is 21:00 UTC under EDT and 22:00
         # under EST — so the UTC instant to query is date-dependent, not a constant.
         preset = st.radio(
             "Time basis (UTC)",
-            ["Strike — 17:00 ET", "End of day — 23:59:59", "Now", "Custom"],
+            ["NAV/S checkpoint — 17:00 ET", "End of day — 23:59:59", "Now", "Custom"],
             horizontal=True,
-            help="Only at the strike are all three figures comparable. End of day sits "
+            help="Only at the checkpoint are all three figures comparable. End of day sits "
                  "2h (EST) to 3h (EDT) later, so the continuous NAV reads above the daily NAV.",
         )
 
@@ -110,7 +110,7 @@ with st.container(border=True):
             custom_time = None
             st.markdown('<div style="height:29px;"></div>', unsafe_allow_html=True)
             st.caption({
-                "Strike — 17:00 ET": f"→ {strike_utc(query_date).strftime('%H:%M')} UTC on this date",
+                "NAV/S checkpoint — 17:00 ET": f"→ {checkpoint_utc(query_date).strftime('%H:%M')} UTC on this date",
                 "End of day — 23:59:59": "→ 23:59:59 UTC",
                 "Now": "→ current UTC time",
             }[preset])
@@ -124,17 +124,17 @@ with st.container(border=True):
         horizontal=True,
         format_func=lambda v: {
             onchain.ORACLE_VIEW: "As the oracle saw it (by effective_at)",
-            onchain.HINDSIGHT_VIEW: "Best estimate, all strikes known (by timestamp)",
+            onchain.HINDSIGHT_VIEW: "Best estimate, all checkpoints known (by timestamp)",
         }[v],
-        help="A strike is invisible to the oracle until published (0.67–3.68 days later). "
+        help="A checkpoint is invisible to the oracle until published (0.67–3.68 days later). "
              "'As the oracle saw it' reproduces what a smart contract would have read at that "
-             "instant. 'Best estimate' uses every strike now known — better for reconciliation. "
+             "instant. 'Best estimate' uses every checkpoint now known — better for reconciliation. "
              "They differ only inside publication gaps, by up to ~0.04 bps.",
     )
 
 if query_clicked:
-    if preset == "Strike — 17:00 ET":
-        target_dt = strike_utc(query_date)
+    if preset == "NAV/S checkpoint — 17:00 ET":
+        target_dt = checkpoint_utc(query_date)
     elif preset == "End of day — 23:59:59":
         target_dt = end_of_day_utc(query_date)
     elif preset == "Now":
@@ -144,7 +144,7 @@ if query_clicked:
 
     st.markdown(
         f'🕐 NAV/share as of <span style="color:#22d3ee; font-weight:700;">{target_dt.isoformat()}</span>'
-        f' &nbsp;<span style="color:#94a3b8; font-size:13px;">({describe_offset_from_strike(target_dt, query_date)})</span>',
+        f' &nbsp;<span style="color:#94a3b8; font-size:13px;">({describe_offset_from_checkpoint(target_dt, query_date)})</span>',
         unsafe_allow_html=True,
     )
 
@@ -196,7 +196,7 @@ if query_clicked:
             else:
                 st.markdown(f'<div class="result-price">${chain_result["price"]:.6f}</div>', unsafe_allow_html=True)
                 if chain_result["stale"]:
-                    note = (f'<span class="cap-warn">⚠️ {chain_result["age_days"]:.1f} days past the last strike — '
+                    note = (f'<span class="cap-warn">⚠️ {chain_result["age_days"]:.1f} days past the last checkpoint — '
                             'beyond the oracle\'s 5-day expiry. Treat as unusable.</span>')
                 elif chain_result["extrapolated"]:
                     note = (f'<span class="cap-warn">Extrapolated {chain_result["age_days"]:.2f} days '
@@ -213,18 +213,18 @@ if query_clicked:
             try:
                 daily = resolve_daily_nav(query_date, fund)
             except Exception as exc:
-                st.markdown('<div class="result-label-row"><span class="result-label">Official Daily NAV</span></div>',
+                st.markdown('<div class="result-label-row"><span class="result-label">Official Daily NAV/S</span></div>',
                             unsafe_allow_html=True)
                 st.markdown('<div class="result-price">—</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="result-caption-slot cap-bad">Lookup failed: {exc}</div>',
                             unsafe_allow_html=True)
             else:
                 tone, headline = STATUS_STYLE[daily["status"]]
-                # Label the date the NAV was actually struck, never the date requested:
+                # Label the date the NAV/S was actually calculated, never the date requested:
                 # the API echoes the requested date back with a carried-forward value.
                 as_of = (f'{daily["as_of_date"]:%m/%d/%Y} 17:00 ET' if daily["as_of_date"] else "—")
                 st.markdown(
-                    '<div class="result-label-row"><span class="result-label">Official Daily NAV</span>'
+                    '<div class="result-label-row"><span class="result-label">Official Daily NAV/S</span>'
                     f'<span class="result-date">📅 {as_of}</span></div>',
                     unsafe_allow_html=True,
                 )
@@ -240,12 +240,12 @@ if query_clicked:
 
     if daily and daily["status"] != "unavailable":
         with st.expander("Provenance & reconciliation"):
-            st.markdown(f"**Daily NAV** — {daily['detail']}")
+            st.markdown(f"**Daily NAV/S** — {daily['detail']}")
             if daily["carried_forward"]:
                 st.warning(
                     f"The API row for {daily['requested_date']:%Y-%m-%d} is forward-filled. Its "
                     f"`net_asset_value_date` field reads **{daily['api_reported_date']}**, but no NAV "
-                    f"was struck that date — the value is **{daily['as_of_date']:%Y-%m-%d}**'s close. "
+                    f"was calculated that date — the value is **{daily['as_of_date']:%Y-%m-%d}**'s close. "
                     "That field echoes whatever date you request, so it carries no provenance."
                 )
             if daily["checkpoint_index"] is not None:
@@ -307,7 +307,7 @@ if query_clicked:
                     st.info(
                         f"Your target is **{chain_result['age_days']:.2f} days past** checkpoint {l_idx}, "
                         "so the contract extrapolates along that line rather than interpolating within "
-                        "it. The figure is a projection, not a struck NAV."
+                        "it. The figure is a projection, not an official NAV/S."
                     )
                 st.caption(f"Oracle contract `{onchain.ORACLE_ADDRESS}` · bracketing view "
                            f"`{chain_result['view']}` · selector `0x{onchain.SEL_CALC_REALTIME_NAVS}`")

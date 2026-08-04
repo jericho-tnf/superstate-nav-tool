@@ -3,7 +3,7 @@ superstate_onchain_nav.py — Query USTB's NAV/share from Superstate's on-chain
 continuous price oracle on Ethereum.
 
 What is actually stored on-chain is ONE checkpoint per business day: the 17:00 ET
-NAV strike, published the next business morning at ~13:07 UTC. Every value between
+NAV/S checkpoint, published the next business morning at ~13:07 UTC. Every value between
 those daily anchors is computed at read time by `calculateRealtimeNavs`, a pure
 function that straight-line interpolates between two checkpoints. So a price
 returned for 13:15 UTC is *derived* on-chain, not stored on-chain — no block ever
@@ -25,7 +25,7 @@ from datetime import datetime, timezone, date
 
 import requests
 
-from nav_time import iso, strike_utc, to_utc, utc_today
+from nav_time import iso, checkpoint_utc, to_utc, utc_today
 
 RPC_URL = "https://ethereum-rpc.publicnode.com"  # free public Ethereum RPC, no key needed
 ORACLE_ADDRESS = "0xe4fa682f94610ccd170680cc3b045d77d9e528a8"  # Superstate USTB Continuous Price Oracle
@@ -51,10 +51,10 @@ CALC_PARAM_ORDER = (
 #
 #   ORACLE_VIEW    keys on effective_at, reproducing exactly what the oracle reported
 #                  at that instant — i.e. what a smart contract reading it would have
-#                  seen. A strike is invisible until it is published, so a Saturday
+#                  seen. A checkpoint is invisible until it is published, so a Saturday
 #                  query extrapolates off the Wed->Thu slope even though Friday's NAV
 #                  was already set.
-#   HINDSIGHT_VIEW keys on timestamp, using every strike now known. This is what you
+#   HINDSIGHT_VIEW keys on timestamp, using every checkpoint now known. This is what you
 #                  want when reconciling against officially reported NAV, because it
 #                  does not pretend not to know Friday's number.
 #
@@ -184,8 +184,8 @@ def latest_checkpoint():
 
 
 def checkpoint_on_or_before(day):
-    """The most recent checkpoint struck on or before `day`, or None if there is none."""
-    want = int(strike_utc(day).timestamp())
+    """The most recent checkpoint at or before `day`, or None if there is none."""
+    want = int(checkpoint_utc(day).timestamp())
     count = checkpoint_count()
     if get_checkpoint(0)["timestamp"] > want:
         return None
@@ -200,16 +200,16 @@ def checkpoint_on_or_before(day):
 
 
 def find_checkpoint_for_date(day):
-    """The checkpoint struck on `day`, or None if no NAV was struck that date.
+    """The checkpoint for `day`, or None if no NAV/S was calculated that date.
 
     This is the authoritative test for whether a calendar date has a real NAV: a
-    checkpoint exists if and only if the fund struck that day. It catches weekends and
+    checkpoint exists if and only if the fund calculated a NAV/S that day. It catches weekends
     market holidays alike without needing a holiday calendar.
     """
     candidate = checkpoint_on_or_before(day)
     if candidate is None:
         return None
-    return candidate if candidate["timestamp"] == int(strike_utc(day).timestamp()) else None
+    return candidate if candidate["timestamp"] == int(checkpoint_utc(day).timestamp()) else None
 
 
 def _find_bracket(target_ts, count, view=ORACLE_VIEW):
@@ -246,7 +246,7 @@ def get_onchain_nav_per_share_at(when, view=ORACLE_VIEW):
     """NAV/share computed on-chain for a point in time.
 
     `when` may be a datetime (naive treated as UTC), a date (that day's 17:00 ET
-    strike), or None for now.
+    NAV/S checkpoint), or None for now.
     """
     if view not in _BRACKET_KEY:
         raise ValueError(f"view must be one of {sorted(_BRACKET_KEY)}, got {view!r}")
@@ -342,7 +342,7 @@ if __name__ == "__main__":
 
     from nav_time import parse_cli_instant
 
-    target = parse_cli_instant(sys.argv[1]) if len(sys.argv) > 1 else strike_utc(utc_today())
+    target = parse_cli_instant(sys.argv[1]) if len(sys.argv) > 1 else checkpoint_utc(utc_today())
     requested_view = sys.argv[2] if len(sys.argv) > 2 else ORACLE_VIEW
 
     result = get_onchain_nav_per_share_at(target, view=requested_view)
@@ -351,7 +351,7 @@ if __name__ == "__main__":
           f"  ({result['earlier_checkpoint_utc']} -> {result['later_checkpoint_utc']})")
     print("  this value is interpolated from daily checkpoints, not stored on-chain")
     if result["extrapolated"]:
-        print(f"  NOTE: extrapolated {result['age_days']:.2f} days past the last usable strike.")
+        print(f"  NOTE: extrapolated {result['age_days']:.2f} days past the last usable checkpoint.")
     if result["stale"]:
-        print(f"  WARNING: {result['age_days']:.2f} days past the last strike, beyond the "
+        print(f"  WARNING: {result['age_days']:.2f} days past the last checkpoint, beyond the "
               f"oracle's {CHECKPOINT_EXPIRATION_PERIOD // 86400}-day expiration window.")

@@ -1,25 +1,25 @@
 """compare_nav.py — Reconcile the off-chain API, the on-chain oracle, and the official daily NAV.
 
 Usage:
-    python compare_nav.py                            # today's 17:00 ET strike
-    python compare_nav.py 2026-07-27                 # that date's strike
+    python compare_nav.py                            # today's 17:00 ET NAV/S checkpoint
+    python compare_nav.py 2026-07-27                 # that date's NAV/S checkpoint
     python compare_nav.py 2026-07-27T23:59:59        # a specific UTC instant
     python compare_nav.py 2026-07-27 --worksheet     # + Etherscan re-performance steps
 """
 import sys
 
 import superstate_onchain_nav as onchain
-from nav_time import describe_offset_from_strike, parse_cli_instant, strike_utc, utc_today
+from nav_time import describe_offset_from_checkpoint, parse_cli_instant, checkpoint_utc, utc_today
 from superstate_nav import NavUnavailable, get_nav_per_share_at, resolve_daily_nav
 
 if __name__ == "__main__":
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     want_worksheet = "--worksheet" in sys.argv
-    target_dt = parse_cli_instant(argv[0]) if argv else strike_utc(utc_today())
+    target_dt = parse_cli_instant(argv[0]) if argv else checkpoint_utc(utc_today())
     target_date = target_dt.date()
 
     print(f"USTB NAV/S at {target_dt.isoformat()}")
-    print(f"  ({describe_offset_from_strike(target_dt, target_date)})\n")
+    print(f"  ({describe_offset_from_checkpoint(target_dt, target_date)})\n")
 
     api_price = chain_price = None
 
@@ -40,12 +40,12 @@ if __name__ == "__main__":
 
     daily = resolve_daily_nav(target_date, fund="USTB")
     if daily["status"] == "unavailable":
-        print(f"  Official daily NAV                  : {daily['detail']}")
+        print(f"  Official daily NAV/S                : {daily['detail']}")
     else:
-        print(f"  Official daily NAV                  : {daily['nav_text']}"
+        print(f"  Official daily NAV/S                :{daily['nav_text']}"
               f"   (as of {daily['as_of_date']:%Y-%m-%d} 17:00 ET)")
         if daily["carried_forward"]:
-            print(f"      CAUTION: no NAV was struck on {target_date:%Y-%m-%d} ({daily['status']}).")
+            print(f"      CAUTION: no NAV/S was calculated on {target_date:%Y-%m-%d} ({daily['status']}).")
             print(f"      {daily['detail']}")
 
     if api_price is not None and chain_price is not None:
@@ -53,10 +53,10 @@ if __name__ == "__main__":
 
     if chain is not None:
         if chain["stale"]:
-            print(f"  WARNING: {chain['age_days']:.2f} days past the last strike — beyond the "
+            print(f"  WARNING: {chain['age_days']:.2f} days past the last checkpoint — beyond the "
                   "oracle's 5-day expiry window.")
         elif chain["extrapolated"]:
-            print(f"  NOTE: extrapolated {chain['age_days']:.2f} days past the last usable strike.")
+            print(f"  NOTE: extrapolated {chain['age_days']:.2f} days past the last usable checkpoint.")
 
     if want_worksheet and chain is not None:
         for view in (onchain.ORACLE_VIEW, onchain.HINDSIGHT_VIEW):

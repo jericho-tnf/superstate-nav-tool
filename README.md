@@ -7,7 +7,7 @@ sources, and reconcile them:
 |---|---|
 | **Off-chain API** | `api.superstate.com` continuous price — defined at every second |
 | **On-chain oracle** | Computed on Ethereum by `calculateRealtimeNavs` from daily checkpoints |
-| **Official daily NAV** | `nav-daily` — one struck value per business day, as of 17:00 ET |
+| **Official daily NAV/S** | `nav-daily` — one calculated value per business day, as of 17:00 ET |
 
 ```bash
 pip install -r requirements.txt
@@ -19,8 +19,8 @@ python compare_nav.py 2026-07-27        # CLI reconciliation
 
 ### 1. The on-chain "continuous" price is derived, not stored
 
-Only **one checkpoint per business day** is ever written on-chain — the 17:00 ET strike,
-published the next business morning at ~13:07 UTC. Every intermediate value is computed
+Only **one checkpoint per business day** is ever written on-chain — the 17:00 ET NAV/S
+checkpoint, published the next business morning at ~13:07 UTC. Every intermediate value is computed
 at read time by straight-line interpolation between two checkpoints.
 
 So a price returned for 13:15 UTC is *computed* on-chain but is not *retrievable* data —
@@ -36,45 +36,45 @@ value  =  11155345 + 0.0121875 × (1784985300 − 1784840400)
 ### 2. `nav-daily` forward-fills, and its date field carries no provenance
 
 Ask for a Saturday, a market holiday, or `2026-12-31` and the API stamps **your requested
-date** into `net_asset_value_date` and returns the last struck value. Nothing in the row
-marks it as carried forward.
+date** into `net_asset_value_date` and returns the last calculated value. Nothing in the
+row marks it as carried forward.
 
 `resolve_daily_nav()` therefore resolves the true as-of date against the on-chain
-checkpoint series — a checkpoint exists **iff** a NAV was struck that date. This
-distinguishes real strikes from weekends, market holidays, and business days whose strike
-has not published yet, with no holiday calendar required:
+checkpoint series — a checkpoint exists **iff** a NAV/S was calculated that date. This
+distinguishes real checkpoints from weekends, market holidays, and business days whose
+checkpoint has not published yet, with no holiday calendar required:
 
 ```
-2026-07-24 Fri  →  strike    as_of 2026-07-24   11.15641200
-2026-07-25 Sat  →  weekend   as_of 2026-07-24   11.15641200   ← carried
-2026-07-03 Fri  →  holiday   as_of 2026-07-02   11.13311100   ← carried
-2026-08-03 Mon  →  pending   as_of 2026-07-31   11.16390300   ← not yet published
+2026-07-24 Fri  →  checkpoint  as_of 2026-07-24   11.15641200
+2026-07-25 Sat  →  weekend     as_of 2026-07-24   11.15641200   ← carried
+2026-07-03 Fri  →  holiday     as_of 2026-07-02   11.13311100   ← carried
+2026-08-03 Mon  →  pending     as_of 2026-07-31   11.16390300   ← not yet published
 ```
 
-Verified 24/24 real strikes matching on-chain exactly over one month.
+Verified 24/24 real checkpoints matching on-chain exactly over one month.
 
-### 3. The strike is 17:00 ET, so its UTC hour moves with DST
+### 3. The NAV/S checkpoint is 17:00 ET, so its UTC hour moves with DST
 
-| Period | Strike in UTC |
+| Period | Checkpoint in UTC |
 |---|---|
 | EST (Nov–Mar) | 22:00 |
 | EDT (Mar–Nov) | 21:00 |
 
 Confirmed across all 412 checkpoints: 265 at 21:00 UTC, 147 at 22:00 UTC, nothing else.
-A hardcoded UTC default bakes in a seasonally drifting error, so use the **Strike** preset
-when comparing against the official daily NAV — it is the only instant where all three
-figures are comparable. End-of-day `23:59:59` sits 2–3h later and always reads above.
+A hardcoded UTC default bakes in a seasonally drifting error, so use the **NAV/S
+checkpoint** preset when comparing against the official daily NAV/S — it is the only
+instant where all three figures are comparable. End-of-day `23:59:59` sits 2–3h later and always reads above.
 
 ## Two bracketing views
 
-A strike is invisible to the oracle until published (lag 0.67–3.68 days), so what the
+A checkpoint is invisible to the oracle until published (lag 0.67–3.68 days), so what the
 oracle *said* at a past instant differs from the best estimate *now*:
 
 - `ORACLE_VIEW` — brackets by `effective_at`. Reproduces exactly what a smart contract
   would have read at that instant. The off-chain API replicates this bit-for-bit.
-- `HINDSIGHT_VIEW` — brackets by `timestamp`, using every strike now known. At a strike
-  instant this returns that strike's stored value exactly, so it reconciles to the
-  official daily NAV to the integer.
+- `HINDSIGHT_VIEW` — brackets by `timestamp`, using every checkpoint now known. At a
+  checkpoint instant this returns that checkpoint's stored value exactly, so it reconciles
+  to the official daily NAV/S to the integer.
 
 They agree except inside publication gaps, where they diverge by up to **0.04 bps**.
 
@@ -101,7 +101,7 @@ Oracle `0xe4fa682f94610ccd170680cc3b045d77d9e528a8`:
 - **Staleness** is measured from the checkpoint's `timestamp`, not `effective_at` —
   measuring from publication time would be lenient by up to 3.68 days.
 - Weekend and Friday end-of-day readings are the least reliable points in the series:
-  they extrapolate off a slope that predates the most recent (unpublished) strike.
+  they extrapolate off a slope that predates the most recent (unpublished) checkpoint.
 - The public RPC is rate-limited. `_eth_call` distinguishes a genuine contract revert
   (`code 3, "execution reverted"`) from transport failures and retries the latter —
   without that, a throttled response would truncate the checkpoint search and return a
@@ -110,7 +110,7 @@ Oracle `0xe4fa682f94610ccd170680cc3b045d77d9e528a8`:
 ## Layout
 
 ```
-nav_time.py                 UTC/ET handling, strike resolution, CLI instant parsing
+nav_time.py                 UTC/ET handling, checkpoint resolution, CLI instant parsing
 superstate_nav.py           off-chain API: continuous price + daily NAV provenance
 superstate_onchain_nav.py   on-chain oracle: checkpoints + interpolated price
 compare_nav.py              CLI three-way reconciliation
