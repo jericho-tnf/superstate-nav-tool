@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 import superstate_onchain_nav as onchain
-from nav_time import (NEW_YORK, checkpoint_utc, describe_offset_from_checkpoint,
+from nav_time import (checkpoint_utc, describe_offset_from_checkpoint,
                       end_of_day_utc, utc_today)
 from superstate_nav import FUND_IDS, NavUnavailable, get_nav_per_share_at, resolve_daily_nav
 
@@ -68,12 +68,6 @@ st.markdown("""
         text-transform: uppercase; color: #7dd3fc; background: #0c2b3a;
         border: 1px solid #164e63; border-radius: 5px; padding: 1px 6px; margin-left: 6px;
     }
-    /* Amber, to signal this figure is NOT what the oracle reported. */
-    .hindsight-tag {
-        display: inline-block; font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
-        text-transform: uppercase; color: #fbbf24; background: #3a2a0c;
-        border: 1px solid #78350f; border-radius: 5px; padding: 1px 6px; margin-left: 6px;
-    }
 
     .stButton > button {
         background: linear-gradient(135deg, #0891b2, #22d3ee);
@@ -119,6 +113,8 @@ with st.container(border=True):
     # the first option. A stable key pins the identity and keeps the choice in
     # session_state. The current time is therefore kept out of the labels entirely and
     # shown in the caption instead, which is not a widget.
+    # The option labels carry the actual UTC time, so no explanatory caption is needed
+    # below them. The DST detail lives in the tooltip for anyone who wants it.
     preset = st.radio(
         "Time basis (all times UTC)",
         [PRESET_CHECKPOINT, PRESET_EOD, PRESET_NOW, PRESET_CUSTOM],
@@ -130,48 +126,18 @@ with st.container(border=True):
             PRESET_NOW: "Now",
             PRESET_CUSTOM: "Custom",
         }[p],
-        help="Only at the NAV/S checkpoint are all three figures comparable. End of day sits "
-             "2h (EST) to 3h (EDT) later, so the continuous price reads above the daily NAV/S.",
+        help="The NAV/S checkpoint is 17:00 America/New_York, which is 21:00 UTC under EDT and "
+             "22:00 UTC under EST — so it moves with US DST, and the option above shows the right "
+             "UTC time for the date you picked. Only at the checkpoint are all three figures "
+             "comparable; end of day sits 2–3h later, so the continuous price reads above the "
+             "official daily NAV/S. Custom is minute-granularity (Streamlit's floor), which is "
+             "finer than the data anyway — the 6th decimal only moves every ~82s.",
     )
 
     custom_time = None
     if preset == PRESET_CUSTOM:
-        # Streamlit's time_input rejects step < 60s, so minute granularity is the floor.
-        # That is finer than the data anyway: at ~0.00106/day accrual the 6th decimal
-        # only moves every ~82 seconds. Use the End of day preset if you need :59.
         custom_time = st.time_input("Time (UTC)", value=checkpoint_dt.time(), step=60,
                                     key="custom_time")
-        st.caption("Minute granularity — the displayed NAV/S only changes every ~82s. "
-                   "For 23:59:59 use the End of day preset.")
-    elif preset == PRESET_CHECKPOINT:
-        st.caption(f"{checkpoint_dt:%H:%M:%S} UTC on {query_date:%d %b %Y} = 17:00 "
-                   f"{checkpoint_dt.astimezone(NEW_YORK):%Z} — the fund's daily valuation point. "
-                   f"This is 22:00 UTC under EST and 21:00 UTC under EDT, so it moves with US DST.")
-    elif preset == PRESET_EOD:
-        st.caption(f"23:59:59 UTC — {(end_of_day_utc(query_date) - checkpoint_dt).total_seconds()/3600:.2f}h "
-                   f"after the {checkpoint_dt:%H:%M} UTC checkpoint, so the continuous price will read above "
-                   "the official daily NAV/S.")
-    else:
-        st.caption(f"Current UTC time at page load, "
-                   f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z. The exact instant is "
-                   "resolved when you press Query.")
-
-    view = st.radio(
-        "On-chain bracketing",
-        [onchain.ORACLE_VIEW, onchain.HINDSIGHT_VIEW],
-        horizontal=True,
-        key="bracket_view",
-        format_func=lambda v: {
-            onchain.ORACLE_VIEW: "As the oracle saw it (by effective_at) — canonical",
-            onchain.HINDSIGHT_VIEW: "Hindsight, all checkpoints known (by timestamp) — analytical",
-        }[v],
-        help="A checkpoint is invisible to the oracle until published (0.67–3.68 days later). "
-             "'As the oracle saw it' is the only faithful reproduction of the contract: the oracle "
-             "brackets on effective_at, which is what that field exists for. 'Hindsight' brackets on "
-             "timestamp instead — the oracle never does this, so it is an analytical view, not an "
-             "on-chain figure. They differ only inside publication gaps, by up to ~0.04 bps. To "
-             "reconcile to the official NAV/S, read the checkpoint itself (the third card).",
-    )
 
 if query_clicked:
     if preset == PRESET_CHECKPOINT:
@@ -212,34 +178,27 @@ if query_clicked:
                             f'for {api_result["actual_utc"][:19]}Z instead.</span>')
                 elif api_result["snapped_to_nearest_available"]:
                     note = f'<span class="cap-warn">⚠️ Snapped to {api_result["actual_utc"][:19]}Z</span>'
-                elif view == onchain.HINDSIGHT_VIEW:
-                    # The API only implements effective_at bracketing, so it cannot follow the
-                    # hindsight toggle. Without saying so, it looks like a discrepancy.
-                    note = ('<span class="cap-warn">Oracle-view semantics only — cannot follow the '
-                            'hindsight setting, so this will differ from the card beside it.</span>')
                 else:
                     note = '<span class="cap-ok">Continuous price, exact timestamp</span>'
                 st.markdown(f'<div class="result-caption-slot">{note}</div>', unsafe_allow_html=True)
 
     with chain_col:
         with st.container(border=True):
-            # Only the oracle view reproduces what the contract actually returns. The
-            # hindsight view brackets by `timestamp`, which the oracle never does, so
-            # presenting it as "On-chain Oracle" would misattribute a figure the oracle
-            # never reported. Retitled and tagged accordingly.
-            is_oracle_view = view == onchain.ORACLE_VIEW
+            # Always ORACLE_VIEW. It brackets on effective_at, which is what the contract
+            # itself does, so this reproduces exactly what a smart contract would have read.
+            # The module still exposes HINDSIGHT_VIEW for analytical use from the CLI, but
+            # it is deliberately not offered here: it is not an on-chain figure, and showing
+            # it beside the official NAV/S invited recording it as one.
             st.markdown('<div class="result-icon">🔗</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="result-label-row"><span class="result-label">'
-                + ("On-chain Oracle<span class=\"derived-tag\">derived</span>"
-                   if is_oracle_view else
-                   "Continuous NAV/S<span class=\"hindsight-tag\">hindsight</span>")
-                + '</span></div>',
+                '<div class="result-label-row"><span class="result-label">On-chain Oracle'
+                '<span class="derived-tag">derived</span></span></div>',
                 unsafe_allow_html=True,
             )
             chain_result = None
             try:
-                chain_result = onchain.get_onchain_nav_per_share_at(target_dt, view=view)
+                chain_result = onchain.get_onchain_nav_per_share_at(
+                    target_dt, view=onchain.ORACLE_VIEW)
             except (ValueError, onchain.OracleRpcError) as exc:
                 st.markdown('<div class="result-price">—</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="result-caption-slot cap-bad">{exc}</div>', unsafe_allow_html=True)
@@ -252,17 +211,6 @@ if query_clicked:
                 if chain_result["stale"]:
                     note = (f'<span class="cap-warn">⚠️ {chain_result["age_days"]:.1f} days past the last checkpoint — '
                             'beyond the oracle\'s 5-day expiry. Treat as unusable.</span>')
-                elif not is_oracle_view:
-                    # Say plainly what the oracle itself reported, so this figure can never
-                    # be recorded as the oracle's output.
-                    try:
-                        as_oracle = onchain.get_onchain_nav_per_share_at(
-                            target_dt, view=onchain.ORACLE_VIEW)
-                        actual = f'The oracle itself reported ${as_oracle["price"]:.6f} here.'
-                    except Exception:
-                        actual = ""
-                    note = ('<span class="cap-warn">⚠️ Not the oracle\'s output — recomputed using '
-                            f'checkpoints published later. {actual}</span>')
                 elif chain_result["extrapolated"]:
                     note = (f'<span class="cap-warn">Extrapolated {chain_result["age_days"]:.2f} days '
                             f'past checkpoint {chain_result["later_index"]}</span>')
@@ -328,7 +276,6 @@ if query_clicked:
                 st.markdown("---")
                 args = chain_result["etherscan_inputs"]
                 e_idx, l_idx = chain_result["earlier_index"], chain_result["later_index"]
-                bracket_key = "effective_at" if chain_result["view"] == onchain.ORACLE_VIEW else "timestamp"
 
                 st.markdown(
                     f"**On-chain** — `{chain_result['price_units']}` (1e-6 units) computed by "
@@ -336,18 +283,6 @@ if query_clicked:
                     "interpolation between two daily anchors — this number is stored in no block, so "
                     "the figures below are what make it reproducible."
                 )
-                if chain_result["view"] != onchain.ORACLE_VIEW:
-                    st.warning(
-                        "**This is not the oracle's output.** The bracketing view is set to "
-                        "`hindsight`, which selects checkpoints by `timestamp`. The contract selects "
-                        "by `effective_at` and never does this, so the figure above is an analytical "
-                        "recomputation using checkpoints that were not yet published at the queried "
-                        "instant. Do not record it as an on-chain oracle value — switch to "
-                        "*As the oracle saw it* for that. The inputs below still reproduce exactly "
-                        "on Etherscan, because `calculateRealtimeNavs` is a pure function that "
-                        "computes whatever checkpoints you hand it."
-                    )
-
                 st.markdown("###### Re-perform this on Etherscan")
                 st.markdown(
                     f"[Open the oracle's Read Contract tab]({onchain.ETHERSCAN_READ_URL}) → "
@@ -373,11 +308,11 @@ if query_clicked:
 | `laterCheckpointTimestamp` | `{args['laterCheckpointTimestamp']}` | `checkpoints({l_idx}).timestamp` — {chain_result['later_checkpoint_utc']} |
 """)
                 st.markdown(
-                    f"**Why checkpoints {e_idx} and {l_idx}?** In the `{chain_result['view']}` view the "
-                    f"bracket is keyed on **`{bracket_key}`**: checkpoint `{l_idx}` is the newest whose "
-                    f"`{bracket_key}` falls at or before your target instant, and `{e_idx}` is the one "
-                    f"before it. Checkpoint `{l_idx}` became effective "
-                    f"{chain_result['later_effective_utc']}."
+                    f"**Why checkpoints {e_idx} and {l_idx}?** The oracle brackets on "
+                    f"**`effective_at`** — when a checkpoint becomes usable, not when its NAV/S was "
+                    f"calculated. Checkpoint `{l_idx}` is the newest whose `effective_at` falls at or "
+                    f"before your target instant, and `{e_idx}` is the one before it. Checkpoint "
+                    f"`{l_idx}` became effective {chain_result['later_effective_utc']}."
                 )
                 if chain_result["extrapolated"]:
                     st.info(
@@ -385,5 +320,5 @@ if query_clicked:
                         "so the contract extrapolates along that line rather than interpolating within "
                         "it. The figure is a projection, not an official NAV/S."
                     )
-                st.caption(f"Oracle contract `{onchain.ORACLE_ADDRESS}` · bracketing view "
-                           f"`{chain_result['view']}` · selector `0x{onchain.SEL_CALC_REALTIME_NAVS}`")
+                st.caption(f"Oracle contract `{onchain.ORACLE_ADDRESS}` · selector "
+                           f"`0x{onchain.SEL_CALC_REALTIME_NAVS}`")

@@ -82,26 +82,29 @@ A hardcoded UTC default bakes in a seasonally drifting error, so use the **NAV/S
 checkpoint** preset when comparing against the official daily NAV/S — it is the only
 instant where all three figures are comparable. End-of-day `23:59:59` sits 2–3h later and always reads above.
 
-## Two bracketing views
+## Bracketing: the UI uses one view, deliberately
 
-A checkpoint is invisible to the oracle until published (lag 0.67–3.68 days), so what the
-oracle *said* at a past instant differs from the best estimate *now*:
+A checkpoint is invisible to the oracle until published (lag 0.67–3.68 days), so which two
+checkpoints you bracket against matters.
 
-- `ORACLE_VIEW` — brackets by `effective_at`. **This is the canonical one.** It reproduces
-  exactly what a smart contract would have read at that instant, and the off-chain API
-  replicates it bit-for-bit. `effective_at` exists in the struct for precisely this
-  purpose: gating when a checkpoint becomes usable.
-- `HINDSIGHT_VIEW` — brackets by `timestamp`, using every checkpoint now known. **The
-  oracle never does this**, so it is an analytical view, not an on-chain figure. Do not
-  record its output as an oracle value; the UI tags it amber and states what the oracle
-  actually reported.
+`ORACLE_VIEW` brackets by `effective_at` — when a checkpoint becomes *usable*, not when its
+NAV/S was calculated. That is what the contract itself does; `effective_at` exists in the
+struct for precisely that purpose. It reproduces exactly what a smart contract would have
+read at that instant, and the off-chain API replicates it bit-for-bit. **The UI uses this
+and nothing else.**
 
-They agree except inside publication gaps, where they diverge by up to **0.04 bps**.
+`HINDSIGHT_VIEW` brackets by `timestamp` instead, using every checkpoint now known. The
+module still exposes it for analytical use from the CLI, but **the oracle never does this**,
+so its output is not an on-chain figure. It was removed from the UI because showing it
+beside the official NAV/S invited recording a value the oracle never reported — at
+2026-07-31 23:59:59 the oracle returned `11.164048` while hindsight gives `11.164035`.
 
-If what you want is the official NAV/S, don't use either — read the checkpoint directly.
-At a checkpoint instant the hindsight figure is arithmetically identical to
-`checkpoints(N).navs` (the interpolation term is multiplied by zero), so it is a
-roundabout path to a number the third card already reads straight from storage.
+The two differ only inside publication gaps, by up to **0.04 bps**.
+
+And if what you want is the official NAV/S, neither is the route — read the checkpoint
+directly. At a checkpoint instant the hindsight figure is arithmetically identical to
+`checkpoints(N).navs` (the interpolation term is multiplied by zero), so it is a roundabout
+path to a number the third card already reads straight from storage.
 
 ## Re-performing a figure by hand
 
