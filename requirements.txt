@@ -1,3 +1,22 @@
 streamlit
 requests
-tzdata   # zoneinfo has no tz database on Windows without this
+tzdata          # zoneinfo has no tz database on Windows without this
+
+# Upper bound is a workaround, not a preference.
+#
+# starlette 1.4.0 (released 2026-08-05) made `thread_minimum_size` a required
+# argument of GZipResponder.__init__. Streamlit's _MediaAwareGZipResponder
+# subclasses it and calls super().__init__(app, minimum_size, compresslevel=...)
+# without that argument, so every HTTP request raises
+#
+#   TypeError: GZipResponder.__init__() missing 1 required
+#              keyword-only argument: 'thread_minimum_size'
+#
+# and the server answers 500 to health checks. Streamlit declares
+# `starlette<2,>=0.46.0`, so a resolver picks 1.4.0 and the deploy breaks with no
+# change to this repo — which is exactly what happened here after a previously
+# working deploy. streamlit 1.61.0 predates starlette 1.4.0 and has the same bug,
+# so upgrading streamlit is not a fix.
+#
+# Remove this pin once a Streamlit release passes the argument through.
+starlette<1.4
