@@ -1,0 +1,28 @@
+# Source of truth for dependencies. Edit this file, never requirements.txt.
+#
+# requirements.txt is generated from this and holds the full pinned tree, because
+# Streamlit Cloud installs from requirements.txt and nothing else. Regenerate with:
+#
+#   python -m uv pip compile requirements.in ^
+#     --python-version 3.14 --python-platform linux ^
+#     --generate-hashes=false -o requirements.txt
+#
+# Resolve for the deployment target (Linux, Python 3.14), not for whatever machine
+# you happen to be on, or the pins can reference wheels that do not exist there.
+
+streamlit
+requests
+
+# zoneinfo has no tz database on Windows without this. Harmless on Linux, where
+# the system tzdb is used, but required for local development.
+tzdata
+
+# starlette 1.4.0 (2026-08-05) made `thread_minimum_size` a required argument of
+# GZipResponder.__init__. Streamlit's _MediaAwareGZipResponder subclasses it and
+# calls super().__init__ without that argument, so every HTTP request raises
+# TypeError and the server answers 500 to health checks. Streamlit declares
+# `starlette<2,>=0.46.0`, so an unpinned resolve takes 1.4.0 and the deploy breaks
+# with no repo change — which is what happened on 2026-08-05.
+#
+# Drop this once a Streamlit release passes the argument through.
+starlette<1.4

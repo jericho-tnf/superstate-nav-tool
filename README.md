@@ -20,6 +20,28 @@ python compare_nav.py 2026-07-27                     # CLI reconciliation
 python compare_nav.py 2026-07-27 --worksheet         # + Etherscan re-performance steps
 ```
 
+## Dependencies
+
+`requirements.in` is the source of truth. `requirements.txt` is generated from it and
+holds the **fully pinned tree**, because Streamlit Cloud installs from
+`requirements.txt` and nothing else. Edit the `.in`, then regenerate:
+
+```bash
+python -m uv pip compile requirements.in \
+  --python-version 3.14 --python-platform linux -o requirements.txt
+```
+
+Resolve for the deployment target — Streamlit Cloud runs Linux on Python 3.14 — not for
+whatever machine you are on, or the pins can reference wheels that do not exist there. The
+current lock is verified installable on both that target and Windows/3.12 for local work.
+
+This exists because an unpinned build broke a previously working deploy with no repo
+change: starlette 1.4.0 shipped on 2026-08-05 and made `thread_minimum_size` a required
+argument of `GZipResponder.__init__`, which Streamlit's subclass does not pass, so every
+request raised `TypeError` and the server answered 500 to health checks. For a tool whose
+output goes into an engagement file, a figure regenerated in six months should come from
+the same code path — hence the full pin rather than just patching that one package.
+
 ## Sources of record
 
 | What | Where |
